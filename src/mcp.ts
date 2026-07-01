@@ -1,8 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { z } from "zod";
-import { storeMemoryInD1 } from "./utils/db";
-import { searchMemories, storeMemory } from "./utils/vectorize";
+import {
+    storeMemoryInD1,
+    getAllMemoriesFromD1,
+    deleteMemoryFromD1,
+    updateMemoryInD1,
+} from "./utils/db";
+import { searchMemories, storeMemory, deleteVectorById, updateMemoryVector } from "./utils/vectorize";
 import { version } from "../package.json";
 
 type MyMCPProps = {
@@ -93,6 +98,113 @@ export class MyMCP extends McpAgent<Env, {}, MyMCPProps> {
           console.error("Error searching memories:", error);
           return {
             content: [{ type: "text", text: "Failed to search memories: " + String(error) }],
+          };
+        }
+      }
+    );
+
+    this.server.tool(
+      "listMCPMemories",
+      `This tool retrieves all stored memories for the current user. Use it when:
+      1. The user wants to see everything that has been remembered
+      2. You need a complete overview of stored context
+      3. The user asks "what do you know about me?" or similar questions
+
+      Returns all memories ordered by creation time (newest first).`,
+      {},
+      async () => {
+        try {
+          const memories = await getAllMemoriesFromD1(this.props.userId, env);
+
+          if (memories.length === 0) {
+            return {
+              content: [{ type: "text", text: "No memories stored yet." }],
+            };
+          }
+
+          const formatted = memories
+            .map((m, i) => `${i + 1}. [${m.id}] ${m.content}`)
+            .join("\n");
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Found ${memories.length} memories:\n${formatted}`,
+              },
+            ],
+          };
+        } catch (error) {
+          console.error("Error listing memories:", error);
+          return {
+            content: [{ type: "text", text: "Failed to list memories: " + String(error) }],
+          };
+        }
+      }
+    );
+
+    this.server.tool(
+      "deleteMCPMemory",
+      `This tool deletes a specific memory by its ID. Use it when:
+      1. The user asks to forget something specific
+      2. A memory is outdated or incorrect and should be removed
+      3. The user wants to clear a particular piece of stored information
+
+      Requires the memory ID, which can be obtained from listMCPMemories or searchMCPMemory.`,
+      { memoryId: z.string().describe("The ID of the memory to delete") },
+      async ({ memoryId }) => {
+        try {
+          await deleteMemoryFromD1(memoryId, this.props.userId, env);
+
+          try {
+            await deleteVectorById(memoryId, this.props.userId, env);
+          } catch (vectorError) {
+            console.error(`Failed to delete vector ${memoryId}:`, vectorError);
+          }
+
+          return {
+            content: [{ type: "text", text: `Memory ${memoryId} deleted successfully.` }],
+          };
+        } catch (error) {
+          console.error("Error deleting memory:", error);
+          return {
+            content: [{ type: "text", text: "Failed to delete memory: " + String(error) }],
+          };
+        }
+      }
+    );
+
+    this.server.tool(
+      "updateMCPMemory",
+      `This tool updates the content of an existing memory. Use it when:
+      1. The user wants to correct or refine a previously stored memory
+      2. Information has changed and needs to be updated rather than replaced
+      3. The user says something like "actually, update that to..."
+
+      Requires the memory ID (from listMCPMemories or searchMCPMemory) and the new content.`,
+      {
+        memoryId: z.string().describe("The ID of the memory to update"),
+        newContent: z.string().describe("The updated content for the memory"),
+      },
+      async ({ memoryId, newContent }) => {
+        try {
+          await updateMemoryInD1(memoryId, this.props.userId, newContent, env);
+
+          try {
+            await updateMemoryVector(memoryId, newContent, this.props.userId, env);
+          } catch (vectorError) {
+            console.error(`Failed to update vector ${memoryId}:`, vectorError);
+          }
+
+          return {
+            content: [
+              { type: "text", text: `Memory ${memoryId} updated to: ${newContent}` },
+            ],
+          };
+        } catch (error) {
+          console.error("Error updating memory:", error);
+          return {
+            content: [{ type: "text", text: "Failed to update memory: " + String(error) }],
           };
         }
       }

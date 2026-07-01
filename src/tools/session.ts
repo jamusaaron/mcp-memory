@@ -9,8 +9,8 @@ import { generateSummary } from "../utils/ai";
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "get_session_brief",
-        "Get a brief for starting a new session: living summary, recent activity, and any open items. Call this at the start of each conversation.",
-        { session_id: z.string().optional().describe("Session ID (auto-generated if omitted)") },
+        "Start a new session by loading the user's living summary, recent activity, and current context. Call this at the beginning of every conversation to ensure continuity across sessions. Returns a comprehensive brief including memory store stats, the living summary, current context, and recent session history.",
+        { session_id: z.string().optional().describe("Session ID — auto-generated if omitted") },
         async ({ session_id }) => {
             try {
                 const sid = session_id ?? uuidv4();
@@ -50,7 +50,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "append_session_log",
-        "Append an entry to the current session log.",
+        "Add a timestamped entry to the current session's log. Use this to record significant events, decisions, or milestones during a conversation.",
         {
             session_id: z.string().describe("Session ID"),
             content: z.string().describe("Log entry content"),
@@ -67,10 +67,10 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "append_session_intent",
-        "Record the user's intent or goals for this session.",
+        "Record what the user wants to accomplish in this session. Use this early in the conversation to capture goals — the intent is stored in the session log and can be reviewed for follow-up.",
         {
             session_id: z.string().describe("Session ID"),
-            intent: z.string().describe("User's intent or goals"),
+            intent: z.string().describe("What the user wants to accomplish"),
         },
         async ({ session_id, intent }) => {
             try {
@@ -84,11 +84,11 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "session_close",
-        "Close a session with a summary of what happened and what carries forward.",
+        "Close the current session with a summary and optional carry-forward items. The carry-forward content is saved to the current context file so it's available in the next session's brief. Call this at the end of conversations.",
         {
             session_id: z.string().describe("Session ID"),
-            summary: z.string().describe("Session summary"),
-            carry_forward: z.string().optional().describe("Items to carry forward to next session"),
+            summary: z.string().describe("What happened in this session"),
+            carry_forward: z.string().optional().describe("Items, tasks, or context to carry into the next session"),
         },
         async ({ session_id, summary, carry_forward }) => {
             try {
@@ -110,7 +110,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "session_audit",
-        "Review a session's full log.",
+        "Review a session's complete log — all entries, intents, and close records. Use this to look back at what happened in a specific session.",
         { session_id: z.string().describe("Session ID") },
         async ({ session_id }) => {
             try {
@@ -127,9 +127,31 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
     );
 
     server.tool(
+        "session_list",
+        "List recent sessions with entry counts and timestamps. Use this to find a session ID for auditing or to see conversation frequency.",
+        {
+            limit: z.number().optional().default(10).describe("Number of recent sessions to show"),
+        },
+        async ({ limit }) => {
+            try {
+                const sessions = await getRecentSessions(userId, env, limit);
+                if (sessions.length === 0) {
+                    return { content: [{ type: "text", text: "No sessions recorded yet." }] };
+                }
+                const formatted = sessions.map(s =>
+                    `${s.session_id}: ${s.entries} entries (last activity: ${s.last_entry})`
+                ).join("\n");
+                return { content: [{ type: "text", text: `${sessions.length} recent sessions:\n${formatted}` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to list sessions: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
         "check_write_activity",
-        "Check recent write activity (memories, people, notes created in the last N minutes).",
-        { since_minutes: z.number().optional().default(60) },
+        "Check how many memories, people, and notes have been created recently. Use this to gauge session productivity or to detect if the system has been quiet.",
+        { since_minutes: z.number().optional().default(60).describe("Look back this many minutes (default 60)") },
         async ({ since_minutes }) => {
             try {
                 const activity = await getWriteActivity(userId, env, since_minutes);
@@ -142,7 +164,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "get_living_summary",
-        "Get the cached living summary of the user.",
+        "Retrieve the cached living summary — a concise, AI-generated overview of everything known about the user. If none exists, use rebuild_living_summary to generate one.",
         {},
         async () => {
             try {
@@ -159,7 +181,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "rebuild_living_summary",
-        "Regenerate the living summary from all active memories.",
+        "Regenerate the living summary from all active memories using AI. The summary is cached in KV for fast retrieval. Run this after significant memory changes or periodically to keep the summary current.",
         {},
         async () => {
             try {
@@ -183,8 +205,8 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "update_context_current",
-        "Update the current context document (R2-backed). Used to track what's happening right now across sessions.",
-        { content: z.string().describe("Current context content") },
+        "Update the current context document — a persistent note (stored in R2) that tracks what's happening right now across sessions. This is included in every session brief automatically.",
+        { content: z.string().describe("Current context content (replaces existing)") },
         async ({ content }) => {
             try {
                 await writeStaticFile(userId, "context_current", content, env);

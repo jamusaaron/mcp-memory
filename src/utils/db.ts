@@ -353,3 +353,63 @@ export async function getWriteActivity(userId: string, env: Env, sinceMinutes: n
     const n = await env.DB.prepare("SELECT COUNT(*) as c FROM ai_notes WHERE userId=? AND created_at>=?").bind(userId, since).first() as any;
     return { memories: m?.c ?? 0, people: p?.c ?? 0, notes: n?.c ?? 0 };
 }
+
+// ── Extended People Operations ──
+
+export async function searchPeopleByName(userId: string, query: string, env: Env): Promise<Person[]> {
+    const res = await env.DB.prepare(
+        "SELECT * FROM people WHERE userId=? AND (name LIKE ? OR aliases LIKE ?) ORDER BY name"
+    ).bind(userId, `%${query}%`, `%${query}%`).all();
+    return (res.results as any[]).map(r => ({ ...r, aliases: parseJsonField(r.aliases, []) })) as unknown as Person[];
+}
+
+export async function deletePerson(id: string, userId: string, env: Env): Promise<void> {
+    await env.DB.prepare("DELETE FROM person_profiles WHERE personId=? AND userId=?").bind(id, userId).run();
+    await env.DB.prepare("DELETE FROM people WHERE id=? AND userId=?").bind(id, userId).run();
+}
+
+export async function updatePerson(id: string, userId: string, updates: { name?: string; aliases?: string[] }, env: Env): Promise<void> {
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (updates.name !== undefined) { sets.push("name=?"); vals.push(updates.name); }
+    if (updates.aliases !== undefined) { sets.push("aliases=?"); vals.push(JSON.stringify(updates.aliases)); }
+    if (sets.length === 0) return;
+    sets.push("updated_at=?");
+    vals.push(new Date().toISOString());
+    vals.push(id, userId);
+    await env.DB.prepare(`UPDATE people SET ${sets.join(",")} WHERE id=? AND userId=?`).bind(...vals).run();
+}
+
+// ── Extended Memory Queries ──
+
+export async function queryMemoriesByTags(userId: string, tags: string[], env: Env, limit: number = 50): Promise<Memory[]> {
+    const conditions = tags.map(() => "tags LIKE ?").join(" OR ");
+    const params: unknown[] = [userId, ...tags.map(t => `%"${t}"%`)];
+    const res = await env.DB.prepare(
+        `SELECT * FROM memories WHERE userId=? AND suppressed=0 AND (${conditions}) ORDER BY created_at DESC LIMIT ?`
+    ).bind(...params, limit).all();
+    return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function getSuppressedMemories(userId: string, env: Env, limit: number = 50): Promise<Memory[]> {
+    const res = await env.DB.prepare(
+        "SELECT * FROM memories WHERE userId=? AND suppressed=1 ORDER BY updated_at DESC LIMIT ?"
+    ).bind(userId, limit).all();
+    return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+// ── Extended Uncertainty Operations ──
+
+export async function dismissUncertainty(id: string, userId: string, env: Env): Promise<void> {
+    await env.DB.prepare(
+        "UPDATE uncertainties SET status='dismissed' WHERE id=? AND userId=?"
+    ).bind(id, userId).run();
+}
+
+// ── Extended AI Note Operations ──
+
+export async function deleteAiNote(userId: string, agentId: string, key: string, env: Env, namespace: string = "default"): Promise<void> {
+    await env.DB.prepare(
+        "DELETE FROM ai_notes WHERE userId=? AND agent_id=? AND key=? AND namespace=?"
+    ).bind(userId, agentId, key, namespace).run();
+}

@@ -1,6 +1,6 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 88 tools.
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 105 tools.
 
 ## Stack
 
@@ -19,14 +19,14 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/mcp.ts` — MCP server aggregating all tool groups
 - `src/schema.ts` — D1 database migrations (10 tables)
 - `src/types.ts` — Type definitions for all data models
-- `src/tools/memory.ts` — Memory CRUD & retrieval (20 tools)
-- `src/tools/people.ts` — People/profile management (13 tools)
-- `src/tools/uncertainty.ts` — Uncertainty/clarification loop (3 tools)
-- `src/tools/session.ts` — Session lifecycle (9 tools)
-- `src/tools/static-files.ts` — R2-backed static files (2 tools)
-- `src/tools/behavioral.ts` — Behavioral & personality modeling (6 tools)
+- `src/tools/memory.ts` — Memory CRUD, search, maintenance & analysis (28 tools)
+- `src/tools/people.ts` — People/profile management (16 tools)
+- `src/tools/uncertainty.ts` — Uncertainty/clarification loop (4 tools)
+- `src/tools/session.ts` — Session lifecycle (10 tools)
+- `src/tools/static-files.ts` — R2-backed static files (4 tools)
+- `src/tools/behavioral.ts` — Behavioral & personality modeling (7 tools)
 - `src/tools/ingestion.ts` — Ingestion pipeline (3 tools)
-- `src/tools/ai-agents.ts` — Cross-agent shared memory (5 tools)
+- `src/tools/ai-agents.ts` — Cross-agent shared memory (6 tools)
 - `src/tools/health.ts` — System health check (1 tool)
 - `src/tools/infra.ts` — Cloudflare infra passthrough (26 tools)
 - `src/utils/db.ts` — D1 database operations

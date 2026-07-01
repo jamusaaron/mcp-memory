@@ -7,9 +7,27 @@ import { llmCall } from "../utils/ai";
 
 export function registerBehavioralTools(server: McpServer, env: Env, userId: string) {
     server.tool(
+        "record_observation",
+        "Record a behavioral observation about the user — communication patterns, corrections, preferences expressed through behavior rather than explicit statements. Observations feed into the behavioral model and help the assistant adapt over time.",
+        {
+            observation_type: z.string().describe("Type of observation: 'communication' (style patterns), 'correction' (user corrected the assistant), 'preference' (implicit preference signal), 'emotional' (mood/feeling), 'tone_feedback' (how a tone landed)"),
+            content: z.string().describe("What was observed"),
+            context: z.string().optional().describe("The situation in which this was observed"),
+        },
+        async ({ observation_type, content, context }) => {
+            try {
+                const id = await insertBehavioralObservation(userId, observation_type, content, context ?? null, env);
+                return { content: [{ type: "text", text: `Observation recorded [${id}]: [${observation_type}] ${content}` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to record observation: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
         "behavioral_model",
-        "Get or rebuild the behavioral model — a rolling summary of communication patterns, corrections, and preferences.",
-        { rebuild: z.boolean().optional().default(false).describe("Force rebuild from observations") },
+        "Retrieve or rebuild the behavioral model — an AI-generated summary of the user's communication patterns, correction tendencies, and preference signals. Cached in KV for fast retrieval. Set rebuild=true to regenerate from all observations.",
+        { rebuild: z.boolean().optional().default(false).describe("Force rebuild from all stored observations") },
         async ({ rebuild }) => {
             try {
                 if (!rebuild) {
@@ -19,7 +37,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
                 const observations = await getBehavioralObservations(userId, env, undefined, 100);
                 if (observations.length === 0) {
-                    return { content: [{ type: "text", text: "No behavioral observations recorded yet." }] };
+                    return { content: [{ type: "text", text: "No behavioral observations recorded yet. Use record_observation to start building the model." }] };
                 }
 
                 const items = observations.map(o => `[${o.observation_type}] ${o.content}`).join("\n");
@@ -38,10 +56,10 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "emotional_context",
-        "Record or retrieve emotional context — how the user is feeling, mood signals, emotional patterns.",
+        "Record or retrieve the user's emotional context — mood signals, emotional patterns, and sentiment over time. When recording, pass an observation; when reading, set query=true.",
         {
-            observation: z.string().optional().describe("New emotional observation to record"),
-            query: z.boolean().optional().default(false).describe("Just retrieve current emotional context"),
+            observation: z.string().optional().describe("New emotional observation to record (e.g., 'User seems frustrated with debugging session')"),
+            query: z.boolean().optional().default(false).describe("Set to true to retrieve current emotional context without recording"),
         },
         async ({ observation, query }) => {
             try {
@@ -72,7 +90,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "get_personality",
-        "Get the current personality profile — the assistant's configured personality traits and interaction style.",
+        "Retrieve the assistant's configured personality profile — the traits, style, and interaction guidelines that shape how it communicates. Checks KV cache first, then R2. If no profile exists, use build_personality to create one.",
         {},
         async () => {
             try {
@@ -94,8 +112,8 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "get_personality_mode",
-        "Get the active personality mode/style for a given situation.",
-        { situation: z.string().describe("Current situation or context") },
+        "Get an AI recommendation for the best tone and interaction mode for a given situation, based on configured personality styles and historical feedback. Use this to adapt communication style dynamically.",
+        { situation: z.string().describe("Description of the current situation (e.g., 'user is debugging a critical production issue', 'casual conversation about hobbies')") },
         async ({ situation }) => {
             try {
                 const styles = await readStaticFile(userId, "personality_styles", env);
@@ -125,7 +143,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "build_personality",
-        "Build or rebuild the personality profile from behavioral observations and feedback history.",
+        "Build or rebuild the assistant's personality profile from behavioral observations and feedback history. Generates core traits, communication style, adaptation patterns, and a default mode. Saves to R2 and caches in KV.",
         {},
         async () => {
             try {
@@ -141,7 +159,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
                 }
 
                 if (!input) {
-                    return { content: [{ type: "text", text: "No data to build personality from. Record behavioral observations and personality feedback first." }] };
+                    return { content: [{ type: "text", text: "No data to build personality from. Use record_observation and personality_feedback to provide data first." }] };
                 }
 
                 const personality = await llmCall(
@@ -161,14 +179,14 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "personality_feedback",
-        "Log feedback on how a particular tone/mode worked in a situation. Aggregates into the self-tuning style profile.",
+        "Log feedback on how a specific tone/mode worked in a situation. This feeds the self-tuning loop — over time, the system learns which communication styles work best in which contexts. Score from -1 (terrible) to 1 (perfect).",
         {
-            persona: z.string().optional().default("default"),
-            tone: z.string().describe("Tone used (e.g., casual, formal, empathetic)"),
-            mode: z.string().describe("Mode used (e.g., teaching, collaborative, direct)"),
-            situation: z.string().describe("The situation or context"),
-            outcome: z.string().describe("How it landed / what happened"),
-            feedback_score: z.number().min(-1).max(1).describe("Score: -1 (bad) to 1 (great)"),
+            persona: z.string().optional().default("default").describe("Persona name if using multiple personalities"),
+            tone: z.string().describe("Tone used (e.g., 'casual', 'formal', 'empathetic', 'technical')"),
+            mode: z.string().describe("Interaction mode (e.g., 'teaching', 'collaborative', 'direct', 'supportive')"),
+            situation: z.string().describe("What situation this was in"),
+            outcome: z.string().describe("How it landed — what happened as a result"),
+            feedback_score: z.number().min(-1).max(1).describe("Score: -1 (bad fit) to 1 (great fit)"),
         },
         async (params) => {
             try {

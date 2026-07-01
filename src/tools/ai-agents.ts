@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listAiAgents, listAiNotes, getAiNote, upsertAiNote } from "../utils/db";
+import { listAiAgents, listAiNotes, getAiNote, upsertAiNote, deleteAiNote } from "../utils/db";
 
 export function registerAiAgentTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "ai_agents_list",
-        "List all AI agents that have left notes in the shared memory space.",
+        "List all AI agents that have left notes in the shared memory space. Each agent is identified by its agent_id string. Use this to discover what agents have been interacting with this user's memory.",
         {},
         async () => {
             try {
@@ -22,8 +22,8 @@ export function registerAiAgentTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "ai_note_list",
-        "List all notes from a specific AI agent, or all notes if no agent specified.",
-        { agent_id: z.string().optional().describe("Filter by agent ID") },
+        "List all notes in the shared AI agent memory space, optionally filtered by agent. Shows agent ID, key, content preview, and last update time. Use this to see what handoffs, findings, or status updates have been shared.",
+        { agent_id: z.string().optional().describe("Filter to notes from a specific agent") },
         async ({ agent_id }) => {
             try {
                 const notes = await listAiNotes(userId, env, agent_id);
@@ -42,11 +42,11 @@ export function registerAiAgentTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "ai_note_read",
-        "Read a specific note by agent ID and key.",
+        "Read the full content of a specific note by agent ID and key. Use this to retrieve handoff details, research findings, or status updates left by another agent (or a previous session of yourself).",
         {
-            agent_id: z.string().describe("Agent ID"),
-            key: z.string().describe("Note key"),
-            namespace: z.string().optional().default("default"),
+            agent_id: z.string().describe("Agent ID that wrote the note"),
+            key: z.string().describe("Note key (e.g., 'handoff', 'findings', 'status', 'config')"),
+            namespace: z.string().optional().default("default").describe("Namespace for note isolation"),
         },
         async ({ agent_id, key, namespace }) => {
             try {
@@ -63,12 +63,12 @@ export function registerAiAgentTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "ai_note_write",
-        "Write a note to the shared AI agent memory space. Used for handoffs, findings, and cross-agent communication.",
+        "Write a note to the shared AI agent memory space. Use this for cross-agent communication: handoffs (what you were working on), findings (what you discovered), status updates, or any data that should be available to other agents or future sessions. Overwrites existing notes with the same agent_id/key/namespace.",
         {
-            agent_id: z.string().describe("Your agent ID"),
-            key: z.string().describe("Note key (e.g., 'handoff', 'findings', 'status')"),
-            content: z.string().describe("Note content"),
-            namespace: z.string().optional().default("default"),
+            agent_id: z.string().describe("Your agent identifier (e.g., 'claude-code', 'research-agent', 'review-bot')"),
+            key: z.string().describe("Note key — a short label for the note's purpose (e.g., 'handoff', 'findings', 'status')"),
+            content: z.string().describe("Note content — structured text with the information to share"),
+            namespace: z.string().optional().default("default").describe("Namespace for note isolation (default: 'default')"),
         },
         async ({ agent_id, key, content, namespace }) => {
             try {
@@ -81,9 +81,27 @@ export function registerAiAgentTools(server: McpServer, env: Env, userId: string
     );
 
     server.tool(
+        "ai_note_delete",
+        "Delete a note from the shared AI agent memory space. Use this to clean up stale handoffs or outdated status notes.",
+        {
+            agent_id: z.string().describe("Agent ID that wrote the note"),
+            key: z.string().describe("Note key to delete"),
+            namespace: z.string().optional().default("default").describe("Namespace"),
+        },
+        async ({ agent_id, key, namespace }) => {
+            try {
+                await deleteAiNote(userId, agent_id, key, env, namespace);
+                return { content: [{ type: "text", text: `Note deleted: ${agent_id}/${key}` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to delete note: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
         "ai_notes_cross_check",
-        "Cross-check notes across agents to find overlaps, contradictions, or relevant handoffs.",
-        { topic: z.string().optional().describe("Topic to focus cross-check on") },
+        "Cross-check notes across all agents to find overlaps, contradictions, or relevant handoffs. Optionally filter by topic. Use this to get a holistic view of what all agents know or to find potential conflicts in multi-agent workflows.",
+        { topic: z.string().optional().describe("Topic keyword to highlight relevant notes") },
         async ({ topic }) => {
             try {
                 const allNotes = await listAiNotes(userId, env);

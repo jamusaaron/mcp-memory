@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { insertPerson, listPeople, getPerson, getPersonProfiles, upsertPersonProfile, insertPendingUpdate, listPendingUpdates, setPendingUpdateStatus, queryMemories } from "../utils/db";
+import { insertPerson, listPeople, getPerson, getPersonProfiles, upsertPersonProfile, insertPendingUpdate, listPendingUpdates, setPendingUpdateStatus, queryMemories, searchPeopleByName, deletePerson, updatePerson } from "../utils/db";
 import { extractProfileUpdates, generateSummary } from "../utils/ai";
 import { writeStaticFile } from "../utils/r2";
 import { PROFILE_SECTIONS } from "../types";
@@ -8,10 +8,10 @@ import { PROFILE_SECTIONS } from "../types";
 export function registerPeopleTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "add_person",
-        "Add a new person to the people tracker.",
+        "Add a new person to the people tracker. Use this when the user mentions someone important — a friend, colleague, family member, etc. — for the first time. After adding, use update_person_profile or extract_profile_updates_from_text to populate their profile.",
         {
-            name: z.string().describe("Person's name"),
-            aliases: z.array(z.string()).optional().describe("Alternative names or nicknames"),
+            name: z.string().describe("Person's full name"),
+            aliases: z.array(z.string()).optional().describe("Alternative names, nicknames, or abbreviations (e.g., ['Mike', 'M.J.'])"),
         },
         async ({ name, aliases }) => {
             try {
@@ -24,8 +24,31 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
     );
 
     server.tool(
+        "search_people",
+        "Search for tracked people by name or alias. Use this to find a person's ID before updating their profile or linking them to memories.",
+        {
+            query: z.string().describe("Name or alias to search for (partial match supported)"),
+        },
+        async ({ query }) => {
+            try {
+                const people = await searchPeopleByName(userId, query, env);
+                if (people.length === 0) {
+                    return { content: [{ type: "text", text: `No people found matching "${query}".` }] };
+                }
+                const formatted = people.map(p => {
+                    const aliases = p.aliases.length > 0 ? ` (aka: ${p.aliases.join(", ")})` : "";
+                    return `[${p.id}] ${p.name}${aliases}`;
+                }).join("\n");
+                return { content: [{ type: "text", text: `${people.length} matches:\n${formatted}` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to search people: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
         "list_people",
-        "List all tracked people.",
+        "List all tracked people. Returns names, aliases, and IDs for every person in the system.",
         {},
         async () => {
             try {
@@ -46,8 +69,8 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "get_person_profile",
-        "Get the full structured profile for a tracked person.",
-        { person_id: z.string().describe("Person ID") },
+        "Get the full structured profile for a tracked person, including all populated sections (identity, personality, psychology, behavior, history, relationship). Use this to recall everything known about a person before discussing them.",
+        { person_id: z.string().describe("Person ID (use search_people or list_people to find IDs)") },
         async ({ person_id }) => {
             try {
                 const person = await getPerson(person_id, userId, env);
@@ -75,12 +98,50 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
     );
 
     server.tool(
-        "update_person_profile",
-        "Update a specific section of a person's profile.",
+        "update_person",
+        "Update a person's name or aliases. Use this to correct misspellings, add nicknames, or update a person's name after a life change.",
         {
             person_id: z.string().describe("Person ID"),
-            section: z.enum(PROFILE_SECTIONS).describe("Profile section"),
-            content: z.record(z.unknown()).describe("Section content as key-value pairs"),
+            name: z.string().optional().describe("New name"),
+            aliases: z.array(z.string()).optional().describe("Updated aliases list (replaces existing aliases)"),
+        },
+        async ({ person_id, name, aliases }) => {
+            try {
+                const person = await getPerson(person_id, userId, env);
+                if (!person) return { content: [{ type: "text", text: `Person ${person_id} not found.` }] };
+                await updatePerson(person_id, userId, { name, aliases }, env);
+                return { content: [{ type: "text", text: `Person ${person.name} updated.${name ? ` Name → ${name}` : ""}${aliases ? ` Aliases → [${aliases.join(", ")}]` : ""}` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to update person: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
+        "delete_person",
+        "Permanently delete a person and all their profile sections. This also removes their profile data but does NOT delete memories that reference them. Use with caution.",
+        {
+            person_id: z.string().describe("Person ID to delete"),
+        },
+        async ({ person_id }) => {
+            try {
+                const person = await getPerson(person_id, userId, env);
+                if (!person) return { content: [{ type: "text", text: `Person ${person_id} not found.` }] };
+                await deletePerson(person_id, userId, env);
+                return { content: [{ type: "text", text: `Person ${person.name} [${person_id}] and all profile sections deleted.` }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: "Failed to delete person: " + String(error) }] };
+            }
+        }
+    );
+
+    server.tool(
+        "update_person_profile",
+        "Update a specific section of a person's structured profile. Merges new key-value pairs with existing content in the section. Sections: identity, personality, psychology, behavior, history, relationship.",
+        {
+            person_id: z.string().describe("Person ID"),
+            section: z.enum(PROFILE_SECTIONS).describe("Profile section to update"),
+            content: z.record(z.unknown()).describe("Key-value pairs to merge into the section (e.g., {\"occupation\": \"engineer\", \"company\": \"Acme\"})"),
         },
         async ({ person_id, section, content }) => {
             try {
@@ -101,14 +162,14 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "propose_profile_updates",
-        "Propose updates to a person's profile for review before applying.",
+        "Stage profile updates for review before applying. Use this when you're not confident enough to apply changes directly — updates are saved as 'pending' and can be reviewed via list_pending_profile_updates, then applied or rejected.",
         {
             person_id: z.string().describe("Person ID"),
             updates: z.array(z.object({
                 section: z.enum(PROFILE_SECTIONS),
-                field: z.string(),
-                value: z.string(),
-                confidence: z.number().min(0).max(1).optional(),
+                field: z.string().describe("Field name (e.g., 'occupation')"),
+                value: z.string().describe("Proposed value"),
+                confidence: z.number().min(0).max(1).optional().describe("How confident you are in this update"),
             })).describe("Proposed updates"),
         },
         async ({ person_id, updates }) => {
@@ -134,7 +195,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "list_pending_profile_updates",
-        "List all pending profile updates awaiting review.",
+        "List all pending profile updates awaiting review. Each update shows the proposed field, value, and confidence score. Use apply_pending_profile_updates or reject_pending_profile_update to process them.",
         {},
         async () => {
             try {
@@ -154,9 +215,9 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "apply_pending_profile_updates",
-        "Apply pending profile updates. Updates with confidence above threshold are auto-applied; others require this explicit call.",
+        "Apply one or more pending profile updates, writing the proposed values into the person's profile sections.",
         {
-            update_ids: z.array(z.string()).describe("IDs of pending updates to apply"),
+            update_ids: z.array(z.string()).describe("IDs of pending updates to apply (from list_pending_profile_updates)"),
         },
         async ({ update_ids }) => {
             try {
@@ -184,7 +245,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "reject_pending_profile_update",
-        "Reject a pending profile update.",
+        "Reject a pending profile update, marking it as rejected without applying changes.",
         { update_id: z.string().describe("ID of the pending update to reject") },
         async ({ update_id }) => {
             try {
@@ -198,11 +259,11 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "extract_profile_updates_from_text",
-        "Use AI to extract structured profile updates from freeform text about a person.",
+        "Use AI to extract structured profile updates from freeform text about a person. High-confidence extractions are auto-applied; lower-confidence ones are staged as pending updates for review.",
         {
             person_id: z.string().describe("Person ID"),
-            text: z.string().describe("Text containing information about the person"),
-            auto_apply_threshold: z.number().optional().default(0.85).describe("Auto-apply updates above this confidence"),
+            text: z.string().describe("Freeform text containing information about the person"),
+            auto_apply_threshold: z.number().optional().default(0.85).describe("Confidence threshold for auto-applying (default 0.85)"),
         },
         async ({ person_id, text, auto_apply_threshold }) => {
             try {
@@ -234,7 +295,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
                     }
                 }
 
-                return { content: [{ type: "text", text: `Extracted ${extracted.length} updates: ${autoApplied} auto-applied (confidence ≥ ${auto_apply_threshold}), ${pendingCount} pending review.` }] };
+                return { content: [{ type: "text", text: `Extracted ${extracted.length} updates: ${autoApplied} auto-applied (confidence >= ${auto_apply_threshold}), ${pendingCount} pending review.` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to extract profile updates: " + String(error) }] };
             }
@@ -243,7 +304,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "audit_profile_health",
-        "Check the health and completeness of all person profiles.",
+        "Check the completeness of all person profiles. Shows which of the 6 standard sections (identity, personality, psychology, behavior, history, relationship) are populated for each person.",
         {},
         async () => {
             try {
@@ -269,7 +330,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "rebuild_profiles",
-        "Rebuild all person profiles from stored memories. Re-aggregates profile sections from memory data.",
+        "Rebuild all person profiles by re-extracting profile data from stored memories. Useful after bulk memory imports or to refresh stale profiles. Only applies high-confidence extractions (>= 0.7).",
         {},
         async () => {
             try {
@@ -307,7 +368,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "rebuild_self_profile",
-        "Rebuild the user's self-profile from all stored memories and save to R2.",
+        "Rebuild the user's self-profile by summarizing all identity-related memories (identity, preferences, likes, goals, rules) and saving to R2 as a persistent document.",
         {},
         async () => {
             try {
@@ -335,11 +396,11 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "update_profile",
-        "Directly update a profile field for a person or self.",
+        "Directly set a single profile field for a person or for the user's self-profile. For bulk updates, use update_person_profile or extract_profile_updates_from_text instead.",
         {
-            person_id: z.string().optional().describe("Person ID (omit for self-profile)"),
+            person_id: z.string().optional().describe("Person ID (omit to update the user's self-profile)"),
             section: z.enum(PROFILE_SECTIONS).describe("Profile section"),
-            field: z.string().describe("Field name"),
+            field: z.string().describe("Field name (e.g., 'occupation', 'hobby', 'communication_style')"),
             value: z.string().describe("Field value"),
         },
         async ({ person_id, section, field, value }) => {

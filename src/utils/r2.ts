@@ -10,6 +10,10 @@ export async function writeStaticFile(userId: string, filename: string, content:
     });
 }
 
+export async function deleteStaticFile(userId: string, filename: string, env: Env): Promise<void> {
+    await env.R2.delete(`${userId}/${filename}`);
+}
+
 export async function listStaticFiles(userId: string, env: Env): Promise<string[]> {
     const listed = await env.R2.list({ prefix: `${userId}/` });
     return listed.objects.map(o => o.key.replace(`${userId}/`, ""));

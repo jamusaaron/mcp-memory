@@ -7,11 +7,11 @@ import { extractFromTranscript, triageText } from "../utils/ai";
 export function registerIngestionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "ingest_transcript",
-        "Ingest a conversation transcript and extract structured memories from it. Runs extraction and proposes memories rather than blindly storing everything.",
+        "Ingest a conversation transcript and extract structured memories from it using AI. The system identifies facts, preferences, and notable information, then either auto-stores high-confidence extractions or proposes them for review. Use this to import chat logs, meeting notes, or any conversational data.",
         {
-            source: z.string().describe("Source label (e.g., 'claude-chat-2024-01', 'slack-export')"),
-            content: z.string().describe("Transcript content"),
-            auto_store: z.boolean().optional().default(false).describe("Automatically store extracted memories"),
+            source: z.string().describe("Source label for tracking (e.g., 'claude-chat-2024-01', 'slack-export', 'meeting-notes')"),
+            content: z.string().describe("Transcript content — the raw text of the conversation"),
+            auto_store: z.boolean().optional().default(false).describe("If true, automatically store extractions with confidence >= 0.7. If false, only propose them for review."),
         },
         async ({ source, content, auto_store }) => {
             try {
@@ -64,7 +64,7 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
 
     server.tool(
         "list_transcripts",
-        "List all ingested transcripts.",
+        "List all ingested transcripts with their processing status. Shows source, processing state, extraction count, and ingestion date for each transcript.",
         {},
         async () => {
             try {
@@ -84,10 +84,10 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
 
     server.tool(
         "submit_inbound",
-        "Submit inbound data (text, notes, observations) for triage and potential storage. The system decides what's worth keeping.",
+        "Submit freeform text for AI triage — the system decides whether it's worth storing as a memory. If valuable, it auto-categorizes, scores, and stores it. Duplicates are detected and skipped. Use this as a fire-and-forget way to capture potentially useful information without manually categorizing it.",
         {
-            text: z.string().describe("Inbound text to process"),
-            source: z.string().optional().default("inbound").describe("Source label"),
+            text: z.string().describe("Text to process and potentially store"),
+            source: z.string().optional().default("inbound").describe("Source label for tracking"),
         },
         async ({ text, source }) => {
             try {

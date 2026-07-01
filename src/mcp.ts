@@ -6,7 +6,6 @@ import { registerMemoryTools } from "./tools/memory";
 import { registerPeopleTools } from "./tools/people";
 import { registerUncertaintyTools } from "./tools/uncertainty";
 import { registerSessionTools } from "./tools/session";
-import { registerStaticFileTools } from "./tools/static-files";
 import { registerBehavioralTools } from "./tools/behavioral";
 import { registerIngestionTools } from "./tools/ingestion";
 import { registerAiAgentTools } from "./tools/ai-agents";
@@ -31,7 +30,6 @@ export class MyMCP extends McpAgent<Env, {}, MyMCPProps> {
         registerPeopleTools(this.server, env, userId);
         registerUncertaintyTools(this.server, env, userId);
         registerSessionTools(this.server, env, userId);
-        registerStaticFileTools(this.server, env, userId);
         registerBehavioralTools(this.server, env, userId);
         registerIngestionTools(this.server, env, userId);
         registerAiAgentTools(this.server, env, userId);

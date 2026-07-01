@@ -7,6 +7,8 @@
 
 **MCP Memory** is a **MCP Server** that gives **MCP Clients (Cursor, Claude, Windsurf and more)** the **ability to remember** information about users (preferences, behaviors) **across conversations**. It uses vector search technology to find relevant memories based on meaning, not just keywords. It's built with Cloudflare Workers, D1, Vectorize (RAG), Durable Objects, Workers AI and Agents.
 
+This fork's default deployment exposes **97 MCP tools** without requiring a Cloudflare R2 subscription. It excludes the four R2-backed static-file tools and the four R2 infrastructure-management tools; all other memory, profile, session, behavioral, ingestion, shared-memory, health, and infrastructure tools remain available.
+
 ## 📺 Video
 
 <a href="https://www.youtube.com/watch?feature=player_embedded&v=qfFvYERw2TQ" target="_blank">

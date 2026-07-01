@@ -7,6 +7,7 @@
 		"dev": "wrangler dev --experimental-vectorize-bind-to-prod",
 		"format": "biome format --write",
 		"lint:fix": "biome lint --fix",
+		"test:surface": "node scripts/check-tool-surface.mjs",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types"
 	},

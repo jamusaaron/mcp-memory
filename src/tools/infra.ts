@@ -185,51 +185,6 @@ export function registerInfraTools(server: McpServer, env: Env) {
         })
     );
 
-    // ── R2 ──
-    server.tool("r2_bucket_create", "Create an R2 bucket.", {
-        name: z.string(),
-    }, async ({ name }) => {
-        try {
-            const accountId = getAccountId(env);
-            const data = await cfFetch(`/accounts/${accountId}/r2/buckets`, env, "POST", { name });
-            return { content: [{ type: "text", text: JSON.stringify(data.result, null, 2) }] };
-        } catch (error) {
-            return { content: [{ type: "text", text: "Error: " + String(error) }] };
-        }
-    });
-
-    server.tool("r2_bucket_get", "Get R2 bucket details.", {
-        name: z.string(),
-    }, async ({ name }) => {
-        try {
-            const accountId = getAccountId(env);
-            const data = await cfFetch(`/accounts/${accountId}/r2/buckets/${name}`, env);
-            return { content: [{ type: "text", text: JSON.stringify(data.result, null, 2) }] };
-        } catch (error) {
-            return { content: [{ type: "text", text: "Error: " + String(error) }] };
-        }
-    });
-
-    server.tool("r2_bucket_delete", "Delete an R2 bucket.", {
-        name: z.string(),
-    }, async ({ name }) => {
-        try {
-            const accountId = getAccountId(env);
-            const data = await cfFetch(`/accounts/${accountId}/r2/buckets/${name}`, env, "DELETE");
-            return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-        } catch (error) {
-            return { content: [{ type: "text", text: "Error: " + String(error) }] };
-        }
-    });
-
-    server.tool("r2_buckets_list", "List all R2 buckets.", {},
-        wrapHandler(async () => {
-            const accountId = getAccountId(env);
-            const data = await cfFetch(`/accounts/${accountId}/r2/buckets`, env);
-            return JSON.stringify(data.result?.buckets ?? data.result, null, 2);
-        })
-    );
-
     // ── Hyperdrive ──
     server.tool("hyperdrive_config_get", "Get a Hyperdrive config.", {
         config_id: z.string(),

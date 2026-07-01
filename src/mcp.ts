@@ -1,213 +1,41 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
-import { z } from "zod";
-import {
-    storeMemoryInD1,
-    getAllMemoriesFromD1,
-    deleteMemoryFromD1,
-    updateMemoryInD1,
-} from "./utils/db";
-import { searchMemories, storeMemory, deleteVectorById, updateMemoryVector } from "./utils/vectorize";
 import { version } from "../package.json";
 
+import { registerMemoryTools } from "./tools/memory";
+import { registerPeopleTools } from "./tools/people";
+import { registerUncertaintyTools } from "./tools/uncertainty";
+import { registerSessionTools } from "./tools/session";
+import { registerStaticFileTools } from "./tools/static-files";
+import { registerBehavioralTools } from "./tools/behavioral";
+import { registerIngestionTools } from "./tools/ingestion";
+import { registerAiAgentTools } from "./tools/ai-agents";
+import { registerHealthTools } from "./tools/health";
+import { registerInfraTools } from "./tools/infra";
+
 type MyMCPProps = {
-  userId: string;
+    userId: string;
 };
 
 export class MyMCP extends McpAgent<Env, {}, MyMCPProps> {
-  server = new McpServer({
-    name: "MCP Memory",
-    version,
-  });
+    server = new McpServer({
+        name: "MCP Memory",
+        version,
+    });
 
-  async init() {
-    const env = this.env as Env;
+    async init() {
+        const env = this.env as Env;
+        const userId = this.props.userId;
 
-    this.server.tool(
-      "addToMCPMemory",
-      `This tool stores important user information in a persistent memory layer. Use it when:
-      1. User explicitly asks to remember something ("remember this...")
-      2. You detect significant user preferences, traits, or patterns worth preserving
-      3. Technical details, examples, or emotional responses emerge that would be valuable in future interactions
-
-      Consider using this tool after each user message to build comprehensive context over time. The stored information
-      will be available in future sessions to provide personalized responses. THIS TOOL MUST BE INVOKED THROUGH
-      A FUNCTION CALL - IT IS NOT A PASSIVE RESOURCE BUT AN ACTIVE STORAGE MECHANISM THAT REQUIRES EXPLICIT INVOCATION.`,
-      { thingToRemember: z.string().describe("No description") },
-      async ({ thingToRemember }) => {
-        try {
-          // Store in Vectorize using the refactored function
-          const memoryId = await storeMemory(thingToRemember, this.props.userId, env);
-
-          // Also store content in D1 database
-          await storeMemoryInD1(thingToRemember, this.props.userId, env, memoryId);
-
-          console.log(
-            `Memory stored successfully in Vectorize and D1 with ID: ${memoryId}, content: "${thingToRemember}"`
-          );
-
-          return {
-            content: [{ type: "text", text: "Remembered: " + thingToRemember }],
-          };
-        } catch (error) {
-          console.error("Error storing memory:", error);
-          return {
-            content: [{ type: "text", text: "Failed to remember: " + String(error) }],
-          };
-        }
-      }
-    );
-
-    this.server.tool(
-      "searchMCPMemory",
-      `This tool searches the user's persistent memory layer for relevant information, preferences, and past context.
-      It uses semantic matching to find connections between your query and stored memories, even when exact keywords don't match.
-      Use this tool when:
-      1. You need historical context about the user's preferences or past interactions
-      2. The user refers to something they previously mentioned or asked you to remember
-      3. You need to verify if specific information about the user exists in memory
-
-      This tool must be explicitly invoked through a function call - it is not a passive resource but an active search mechanism.
-      Always consider searching memory when uncertain about user context or preferences.`,
-      { informationToGet: z.string().describe("No description") },
-      async ({ informationToGet }) => {
-        try {
-          console.log(`Searching with query: "${informationToGet}"`);
-
-          // Use the refactored function to search memories
-          const memories = await searchMemories(informationToGet, this.props.userId, env);
-
-          console.log(`Search returned ${memories.length} matches`);
-
-          if (memories.length > 0) {
-            return {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    "Found memories:\n" + memories.map((m) => `${m.content} (score: ${m.score.toFixed(4)})`).join("\n"),
-                },
-              ],
-            };
-          }
-
-          return {
-            content: [{ type: "text", text: "No relevant memories found." }],
-          };
-        } catch (error) {
-          console.error("Error searching memories:", error);
-          return {
-            content: [{ type: "text", text: "Failed to search memories: " + String(error) }],
-          };
-        }
-      }
-    );
-
-    this.server.tool(
-      "listMCPMemories",
-      `This tool retrieves all stored memories for the current user. Use it when:
-      1. The user wants to see everything that has been remembered
-      2. You need a complete overview of stored context
-      3. The user asks "what do you know about me?" or similar questions
-
-      Returns all memories ordered by creation time (newest first).`,
-      {},
-      async () => {
-        try {
-          const memories = await getAllMemoriesFromD1(this.props.userId, env);
-
-          if (memories.length === 0) {
-            return {
-              content: [{ type: "text", text: "No memories stored yet." }],
-            };
-          }
-
-          const formatted = memories
-            .map((m, i) => `${i + 1}. [${m.id}] ${m.content}`)
-            .join("\n");
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Found ${memories.length} memories:\n${formatted}`,
-              },
-            ],
-          };
-        } catch (error) {
-          console.error("Error listing memories:", error);
-          return {
-            content: [{ type: "text", text: "Failed to list memories: " + String(error) }],
-          };
-        }
-      }
-    );
-
-    this.server.tool(
-      "deleteMCPMemory",
-      `This tool deletes a specific memory by its ID. Use it when:
-      1. The user asks to forget something specific
-      2. A memory is outdated or incorrect and should be removed
-      3. The user wants to clear a particular piece of stored information
-
-      Requires the memory ID, which can be obtained from listMCPMemories or searchMCPMemory.`,
-      { memoryId: z.string().describe("The ID of the memory to delete") },
-      async ({ memoryId }) => {
-        try {
-          await deleteMemoryFromD1(memoryId, this.props.userId, env);
-
-          try {
-            await deleteVectorById(memoryId, this.props.userId, env);
-          } catch (vectorError) {
-            console.error(`Failed to delete vector ${memoryId}:`, vectorError);
-          }
-
-          return {
-            content: [{ type: "text", text: `Memory ${memoryId} deleted successfully.` }],
-          };
-        } catch (error) {
-          console.error("Error deleting memory:", error);
-          return {
-            content: [{ type: "text", text: "Failed to delete memory: " + String(error) }],
-          };
-        }
-      }
-    );
-
-    this.server.tool(
-      "updateMCPMemory",
-      `This tool updates the content of an existing memory. Use it when:
-      1. The user wants to correct or refine a previously stored memory
-      2. Information has changed and needs to be updated rather than replaced
-      3. The user says something like "actually, update that to..."
-
-      Requires the memory ID (from listMCPMemories or searchMCPMemory) and the new content.`,
-      {
-        memoryId: z.string().describe("The ID of the memory to update"),
-        newContent: z.string().describe("The updated content for the memory"),
-      },
-      async ({ memoryId, newContent }) => {
-        try {
-          await updateMemoryInD1(memoryId, this.props.userId, newContent, env);
-
-          try {
-            await updateMemoryVector(memoryId, newContent, this.props.userId, env);
-          } catch (vectorError) {
-            console.error(`Failed to update vector ${memoryId}:`, vectorError);
-          }
-
-          return {
-            content: [
-              { type: "text", text: `Memory ${memoryId} updated to: ${newContent}` },
-            ],
-          };
-        } catch (error) {
-          console.error("Error updating memory:", error);
-          return {
-            content: [{ type: "text", text: "Failed to update memory: " + String(error) }],
-          };
-        }
-      }
-    );
-  }
+        registerMemoryTools(this.server, env, userId);
+        registerPeopleTools(this.server, env, userId);
+        registerUncertaintyTools(this.server, env, userId);
+        registerSessionTools(this.server, env, userId);
+        registerStaticFileTools(this.server, env, userId);
+        registerBehavioralTools(this.server, env, userId);
+        registerIngestionTools(this.server, env, userId);
+        registerAiAgentTools(this.server, env, userId);
+        registerHealthTools(this.server, env, userId);
+        registerInfraTools(this.server, env);
+    }
 }

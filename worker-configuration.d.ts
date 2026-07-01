@@ -5,10 +5,14 @@ declare namespace Cloudflare {
 	interface Env {
 		MCP_OBJECT: DurableObjectNamespace /* MyMCP */;
 		DB: D1Database;
+		KV: KVNamespace;
+		R2: R2Bucket;
 		RATE_LIMITER: RateLimit;
 		VECTORIZE: VectorizeIndex;
 		AI: Ai;
 		ASSETS: Fetcher;
+		CLOUDFLARE_API_TOKEN?: string;
+		CLOUDFLARE_ACCOUNT_ID?: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

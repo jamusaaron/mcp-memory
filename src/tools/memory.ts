@@ -25,16 +25,21 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async (params) => {
             try {
-                const existing = await searchMemories(params.text, userId, env, 5);
-                const contradictions = await detectContradictions(params.text, existing.map(m => ({ id: m.id, text: m.content, score: m.score })), env);
+                let contradictions: Array<{ existing_id: string; explanation: string; contradiction_type: string }> = [];
+                try {
+                    const existing = await searchMemories(params.text, userId, env, 5);
+                    contradictions = await detectContradictions(params.text, existing.map(m => ({ id: m.id, text: m.content, score: m.score })), env);
 
-                for (const c of contradictions) {
-                    if (c.contradiction_type === "direct") {
-                        await updateMemory(c.existing_id, userId, {
-                            suppressed: true,
-                            suppression_reason: `Contradicted by newer memory: ${c.explanation}`,
-                        } as any, env);
+                    for (const c of contradictions) {
+                        if (c.contradiction_type === "direct") {
+                            await updateMemory(c.existing_id, userId, {
+                                suppressed: true,
+                                suppression_reason: `Contradicted by newer memory: ${c.explanation}`,
+                            } as any, env);
+                        }
                     }
+                } catch (e) {
+                    console.error("Contradiction check skipped:", e);
                 }
 
                 const memory = await insertMemory({ userId, ...params }, env);

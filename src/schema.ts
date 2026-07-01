@@ -133,7 +133,7 @@ const MIGRATIONS = [
 
 export async function initializeDatabase(env: Env): Promise<void> {
     for (const sql of MIGRATIONS) {
-        await env.DB.exec(sql);
+        await env.DB.prepare(sql).run();
     }
     console.log("Database schema initialized.");
 }

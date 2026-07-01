@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertBehavioralObservation, getBehavioralObservations, insertPersonalityFeedback, getPersonalityFeedback } from "../utils/db";
 import { getPersonalityCache, putPersonalityCache, getBehavioralCache, putBehavioralCache } from "../utils/kv";
-import { readStaticFile, writeStaticFile } from "../utils/r2";
+import { readStaticFile, writeStaticFile } from "../utils/static-context";
 import { llmCall } from "../utils/ai";
 
 export function registerBehavioralTools(server: McpServer, env: Env, userId: string) {
@@ -90,7 +90,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "get_personality",
-        "Retrieve the assistant's configured personality profile — the traits, style, and interaction guidelines that shape how it communicates. Checks KV cache first, then R2. If no profile exists, use build_personality to create one.",
+        "Retrieve the assistant's configured personality profile — the traits, style, and interaction guidelines that shape how it communicates. Checks the fast cache first, then persistent KV context. If no profile exists, use build_personality to create one.",
         {},
         async () => {
             try {
@@ -143,7 +143,7 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
 
     server.tool(
         "build_personality",
-        "Build or rebuild the assistant's personality profile from behavioral observations and feedback history. Generates core traits, communication style, adaptation patterns, and a default mode. Saves to R2 and caches in KV.",
+        "Build or rebuild the assistant's personality profile from behavioral observations and feedback history. Generates core traits, communication style, adaptation patterns, and a default mode. Saves persistent context and updates the fast cache in KV.",
         {},
         async () => {
             try {

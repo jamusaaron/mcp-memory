@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertPerson, listPeople, getPerson, getPersonProfiles, upsertPersonProfile, insertPendingUpdate, listPendingUpdates, setPendingUpdateStatus, queryMemories, searchPeopleByName, deletePerson, updatePerson } from "../utils/db";
 import { extractProfileUpdates, generateSummary } from "../utils/ai";
-import { writeStaticFile } from "../utils/r2";
+import { writeStaticFile } from "../utils/static-context";
 import { PROFILE_SECTIONS } from "../types";
 
 export function registerPeopleTools(server: McpServer, env: Env, userId: string) {
@@ -368,7 +368,7 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "rebuild_self_profile",
-        "Rebuild the user's self-profile by summarizing all identity-related memories (identity, preferences, likes, goals, rules) and saving to R2 as a persistent document.",
+        "Rebuild the user's self-profile by summarizing all identity-related memories (identity, preferences, likes, goals, rules) and saving it as persistent context.",
         {},
         async () => {
             try {

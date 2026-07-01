@@ -1,11 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getMemoryIndex, listPeople } from "../utils/db";
-import { listStaticFiles } from "../utils/r2";
+import { listStaticFiles } from "../utils/static-context";
 
 export function registerHealthTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "health_check",
-        "Run a comprehensive health check on all system components: D1 database, Vectorize index, KV cache, R2 storage, and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
+        "Run a comprehensive health check on all system components: D1 database, Vectorize index, KV cache, persistent context, and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
         {},
         async () => {
             try {
@@ -43,9 +43,9 @@ export function registerHealthTools(server: McpServer, env: Env, userId: string)
 
                 try {
                     const files = await listStaticFiles(userId, env);
-                    checks["R2"] = `OK — ${files.length} static files (${files.join(", ") || "none"})`;
+                    checks["Persistent context"] = `OK — ${files.length} files (${files.join(", ") || "none"})`;
                 } catch (e) {
-                    checks["R2"] = `FAIL — ${String(e)}`;
+                    checks["Persistent context"] = `FAIL — ${String(e)}`;
                 }
 
                 try {

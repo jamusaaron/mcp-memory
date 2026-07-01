@@ -3,7 +3,7 @@ import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { insertSessionLog, getSessionLogs, getRecentSessions, queryMemories, getMemoryIndex, getWriteActivity } from "../utils/db";
 import { getLivingSummary, putLivingSummary, putSessionState, getSessionState } from "../utils/kv";
-import { writeStaticFile, readStaticFile } from "../utils/r2";
+import { writeStaticFile, readStaticFile } from "../utils/static-context";
 import { generateSummary } from "../utils/ai";
 
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
@@ -205,7 +205,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "update_context_current",
-        "Update the current context document — a persistent note (stored in R2) that tracks what's happening right now across sessions. This is included in every session brief automatically.",
+        "Update the current context document — a persistent note stored in KV that tracks what's happening right now across sessions. This is included in every session brief automatically.",
         { content: z.string().describe("Current context content (replaces existing)") },
         async ({ content }) => {
             try {

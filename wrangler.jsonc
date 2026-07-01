@@ -31,13 +31,13 @@
     {
       "binding": "DB",
       "database_name": "mcp-memory-db",
-      "database_id": "a25fc989-398c-40de-9aae-569d662f0455"
+      "database_id": "1dd6fb6c-76fc-4eae-8fec-0960288933f0"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "KV",
-      "id": "mcp-memory-kv"
+      "id": "8920cd7c3b2347428da18c2713dbf81d"
     }
   ],
   "durable_objects": {

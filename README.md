@@ -7,7 +7,9 @@
 
 **MCP Memory** is a **MCP Server** that gives **MCP Clients (Cursor, Claude, Windsurf and more)** the **ability to remember** information about users (preferences, behaviors) **across conversations**. It uses vector search technology to find relevant memories based on meaning, not just keywords. It's built with Cloudflare Workers, D1, Vectorize (RAG), Durable Objects, Workers AI and Agents.
 
-This fork's default deployment exposes **97 MCP tools** without requiring a Cloudflare R2 subscription. It excludes the four R2-backed static-file tools and the four R2 infrastructure-management tools; all other memory, profile, session, behavioral, ingestion, shared-memory, health, and infrastructure tools remain available.
+This fork's default deployment exposes **97 MCP tools** without requiring a Cloudflare R2 subscription. It excludes eight R2-only tools and stores internal persistent context in KV. The remaining memory, profile, session, behavioral, ingestion, shared-memory, health, and infrastructure tools stay discoverable.
+
+The 22 raw Cloudflare account-management tools are optional. They return explicit MCP errors until both `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are configured as Worker secrets/variables; the core memory system does not require those credentials.
 
 ## 📺 Video
 
@@ -18,7 +20,7 @@ This fork's default deployment exposes **97 MCP tools** without requiring a Clou
 ## 🚀 Try It Out
 
 
-### [https://memory.mcpgenerator.com/](https://memory.mcpgenerator.com/)
+Deploy your own Worker and connect an MCP client to `https://<worker>.<account>.workers.dev/<unguessable-user-id>/sse`.
 
 
 
@@ -26,7 +28,7 @@ This fork's default deployment exposes **97 MCP tools** without requiring a Clou
 
 ### Option 1: One-Click Deploy Your Own MCP Memory to Cloudflare
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/puliczek/mcp-memory)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jamusaaron/mcp-memory)
 
 In **Create Vectorize** section choose:
 - **Dimensions:** 1024
@@ -47,7 +49,7 @@ In Cloudflare dashboard, go to "Workers & Pages" and click on Visit
 ### Option 3: Create with CloudFlare CLI
 
 ```bash
-npm create cloudflare@latest --git https://github.com/puliczek/mcp-memory
+npm create cloudflare@latest --git https://github.com/jamusaaron/mcp-memory
 ```
 
 ## 🔧 Setup (Only Option 2 & 3)
@@ -106,10 +108,9 @@ The system finds conceptually related information even when the exact words don'
 MCP Memory implements several security measures to protect user data:
 
 - Each user's memories are stored in **isolated namespaces** within Vectorize for data separation
-- Built-in **rate limiting** prevents abuse (**100 req/min** - you can change it in wrangler.jsonc)
-- **Authentication is based on userId only**
-  - While this is sufficient for basic protection due to rate limiting
-  - Additional authentication layers (like API keys or OAuth) can be easily added if needed
+- Built-in **rate limiting** enforces **100 requests/minute per user ID** (configurable in `wrangler.jsonc`).
+- **Access control is based on an unguessable user ID in the URL.** Treat the complete SSE URL as a bearer credential: do not publish it, commit it, or share it with untrusted clients.
+- User IDs isolate D1 queries, KV keys, and Vectorize namespaces, but this deployment does not add OAuth or header-token authentication.
 - All data is stored in Cloudflare's secure infrastructure
 - All communications are secured with industry-standard TLS encryption (automatically provided by Cloudflare's SSL/TLS certification)
 

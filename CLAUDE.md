@@ -1,14 +1,13 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 105 tools.
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 97 tools and no R2 subscription dependency.
 
 ## Stack
 
 - **Runtime**: Cloudflare Workers
 - **Framework**: Hono (HTTP routing) + Agents SDK (MCP protocol)
 - **Database**: Cloudflare D1 (structured records, profiles, sessions, transcripts)
-- **Cache**: Cloudflare KV (living summary, personality profile, session state)
-- **Files**: Cloudflare R2 (context docs, protocol files, personality configs)
+- **Cache and persistent context**: Cloudflare KV (living summary, personality profile, session state, context documents)
 - **Vector Search**: Cloudflare Vectorize with `@cf/baai/bge-m3` embeddings (1024 dimensions, cosine similarity)
 - **AI**: Workers AI for embeddings, triage, extraction, summarization
 - **State**: Durable Objects (`MyMCP` class)
@@ -19,20 +18,21 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/mcp.ts` — MCP server aggregating all tool groups
 - `src/schema.ts` — D1 database migrations (10 tables)
 - `src/types.ts` — Type definitions for all data models
-- `src/tools/memory.ts` — Memory CRUD, search, maintenance & analysis (28 tools)
-- `src/tools/people.ts` — People/profile management (16 tools)
-- `src/tools/uncertainty.ts` — Uncertainty/clarification loop (4 tools)
-- `src/tools/session.ts` — Session lifecycle (10 tools)
-- `src/tools/static-files.ts` — R2-backed static files (4 tools)
-- `src/tools/behavioral.ts` — Behavioral & personality modeling (7 tools)
+- `src/tools/memory.ts` — Memory CRUD, search, maintenance, and analysis
+- `src/tools/people.ts` — People/profile management
+- `src/tools/uncertainty.ts` — Uncertainty/clarification loop
+- `src/tools/session.ts` — Session lifecycle
+- `src/tools/behavioral.ts` — Behavioral and personality modeling
 - `src/tools/ingestion.ts` — Ingestion pipeline (3 tools)
-- `src/tools/ai-agents.ts` — Cross-agent shared memory (6 tools)
-- `src/tools/health.ts` — System health check (1 tool)
-- `src/tools/infra.ts` — Cloudflare infra passthrough (26 tools)
+- `src/tools/ai-agents.ts` — Cross-agent shared memory
+- `src/tools/health.ts` — System health and degraded-capability reporting
+- `src/tools/infra.ts` — Cloudflare infra passthrough (22 tools; optional credentials required)
 - `src/utils/db.ts` — D1 database operations
 - `src/utils/vectorize.ts` — Vectorize embedding and search
 - `src/utils/kv.ts` — KV cache operations
-- `src/utils/r2.ts` — R2 file operations
+- `src/utils/static-context.ts` — KV-backed persistent context operations
+- `src/utils/cloudflare-api.ts` — validated optional Cloudflare account API access
+- `src/utils/tool-result.ts` — consistent MCP text and error results
 - `src/utils/ai.ts` — Workers AI helpers (triage, extraction, summarization)
 - `static/index.html` — Web UI for managing memories
 - `wrangler.jsonc` — Cloudflare Workers configuration
@@ -42,6 +42,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `npm run dev` — Start local dev server (requires Cloudflare credentials)
 - `npm run deploy` — Deploy to Cloudflare Workers
 - `npx tsc --noEmit` — Type-check
+- `npm run test:all` — Run regression, surface-contract, and type checks
 
 ## Architecture
 

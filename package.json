@@ -7,23 +7,27 @@
 		"dev": "wrangler dev --experimental-vectorize-bind-to-prod",
 		"format": "biome format --write",
 		"lint:fix": "biome lint --fix",
+		"test": "node --import tsx --test tests/**/*.test.ts",
+		"test:all": "npm test && npm run test:surface && tsc --noEmit",
 		"test:surface": "node scripts/check-tool-surface.mjs",
 		"start": "wrangler dev",
 		"cf-typegen": "wrangler types"
 	},
 	"devDependencies": {
+		"@biomejs/biome": "^1.6.2",
 		"@cloudflare/workers-types": "^4.20250421.0",
 		"@types/node": "^22.14.1",
 		"@types/uuid": "^10.0.0",
+		"tsx": "^4.22.4",
 		"typescript": "^5.5.2",
 		"workers-mcp": "^0.1.0-3",
 		"wrangler": "^4.6.0"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "^1.7.0",
+		"@modelcontextprotocol/sdk": "^1.29.0",
 		"agents": "^0.0.60",
-		"hono": "^4.7.4",
-		"uuid": "^11.1.0",
-		"zod": "^3.24.2"
+		"hono": "^4.12.27",
+		"uuid": "^11.1.1",
+		"zod": "^3.25.76"
 	}
 }

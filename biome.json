@@ -15,6 +15,9 @@
 		"enabled": true,
 		"rules": {
 			"recommended": true,
+			"complexity": {
+				"useLiteralKeys": "off"
+			},
 			"suspicious": {
 				"noExplicitAny": "off",
 				"noDebugger": "off",
@@ -22,7 +25,11 @@
 				"noConfusingVoidType": "off"
 			},
 			"style": {
-				"noNonNullAssertion": "off"
+				"noNonNullAssertion": "off",
+				"noInferrableTypes": "off",
+				"noUnusedTemplateLiteral": "off",
+				"useImportType": "off",
+				"useTemplate": "off"
 			}
 		}
 	},

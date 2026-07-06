@@ -24,7 +24,10 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 
 	async init() {
 		const env = this.env as Env;
-		const userId = this.props.userId;
+		const userId = this.props?.userId;
+		if (!userId) {
+			throw new Error("MCP session is missing its user ID");
+		}
 
 		registerMemoryTools(this.server, env, userId);
 		registerPeopleTools(this.server, env, userId);

@@ -1,6 +1,6 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 105 tools.
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 106 tools.
 
 ## Stack
 
@@ -19,7 +19,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/mcp.ts` — MCP server aggregating all tool groups
 - `src/schema.ts` — D1 database migrations (10 tables)
 - `src/types.ts` — Type definitions for all data models
-- `src/tools/memory.ts` — Memory CRUD, search, maintenance & analysis (28 tools)
+- `src/tools/memory.ts` — Memory CRUD, search, maintenance & analysis (29 tools)
 - `src/tools/people.ts` — People/profile management (16 tools)
 - `src/tools/uncertainty.ts` — Uncertainty/clarification loop (4 tools)
 - `src/tools/session.ts` — Session lifecycle (10 tools)
@@ -62,3 +62,11 @@ To use with Claude Code, configure in `.claude/settings.json`:
 ```
 
 Replace `http://localhost:8787` with your deployed Cloudflare Workers URL for production.
+
+## Authentication
+
+Auth is optional and off by default. To require an API key on all data routes, set the `MEMORY_API_KEY` secret (`wrangler secret put MEMORY_API_KEY`). Clients then pass `Authorization: Bearer <key>` or append `?key=<key>` to the URL (e.g. the SSE endpoint: `/{userId}/sse?key=<key>`). MCP message POSTs within an authenticated SSE session are validated by their unguessable session ID.
+
+## Resilience
+
+Semantic search, AI triage, and contradiction detection require Workers AI + Vectorize (remote resources). When those are unreachable (e.g. local dev without Cloudflare auth), search tools fall back to D1 keyword search, triage stores with default categorization, and writes skip the contradiction check — core functionality keeps working.

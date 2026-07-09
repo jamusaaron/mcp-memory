@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
+import { keywordSearchMemories } from "./db";
 
 const MINIMUM_SIMILARITY_SCORE = 0.4;
 
@@ -42,6 +43,28 @@ export async function searchMemories(
             score: m.score ?? 0,
         }))
         .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Semantic search with keyword fallback. If Vectorize or Workers AI is
+ * unavailable (e.g. local dev without Cloudflare auth), falls back to a
+ * D1 keyword search across text, subject, tags, and triggers so retrieval
+ * keeps working. Returns the mode used alongside the results.
+ */
+export async function searchMemoriesWithFallback(
+    query: string,
+    userId: string,
+    env: Env,
+    topK: number = 10,
+): Promise<{ results: Array<{ id: string; content: string; score: number }>; mode: "semantic" | "keyword" }> {
+    try {
+        const results = await searchMemories(query, userId, env, topK);
+        return { results, mode: "semantic" };
+    } catch (e) {
+        console.error("Semantic search unavailable, using keyword fallback:", e);
+        const results = await keywordSearchMemories(userId, query, env, topK);
+        return { results, mode: "keyword" };
+    }
 }
 
 export async function deleteVectorById(id: string, env: Env): Promise<void> {

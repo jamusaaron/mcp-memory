@@ -7,8 +7,8 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - **Runtime**: Cloudflare Workers
 - **Framework**: Hono (HTTP routing) + Agents SDK (MCP protocol)
 - **Database**: Cloudflare D1 (structured records, profiles, sessions, transcripts)
-- **Cache**: Cloudflare KV (living summary, personality profile, session state)
-- **Files**: Cloudflare R2 (context docs, protocol files, personality configs)
+- **Cache**: Cloudflare KV, optional — falls back to D1 `kv_store` table when unbound (living summary, personality profile, session state)
+- **Files**: Cloudflare R2, optional — falls back to D1 `static_files` table when unbound (context docs, protocol files, personality configs)
 - **Vector Search**: Cloudflare Vectorize with `@cf/baai/bge-m3` embeddings (1024 dimensions, cosine similarity)
 - **AI**: Workers AI for embeddings, triage, extraction, summarization
 - **State**: Durable Objects (`MyMCP` class)
@@ -17,7 +17,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 
 - `src/index.ts` — Hono app with REST endpoints and MCP mount
 - `src/mcp.ts` — MCP server aggregating all tool groups
-- `src/schema.ts` — D1 database migrations (10 tables)
+- `src/schema.ts` — D1 database migrations (12 tables)
 - `src/types.ts` — Type definitions for all data models
 - `src/tools/memory.ts` — Memory CRUD, search, maintenance & analysis (29 tools)
 - `src/tools/people.ts` — People/profile management (16 tools)

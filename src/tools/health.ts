@@ -1,11 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getMemoryIndex, listPeople } from "../utils/db";
-import { listStaticFiles } from "../utils/r2";
+import { listStaticFiles, r2Backend } from "../utils/r2";
+import { getKV, kvBackend } from "../utils/kv";
 
 export function registerHealthTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "health_check",
-        "Run a comprehensive health check on all system components: D1 database, Vectorize index, KV cache, R2 storage, and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
+        "Run a comprehensive health check on all system components: D1 database, Vectorize index, cache (KV or D1 fallback), static files (R2 or D1 fallback), and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
         {},
         async () => {
             try {
@@ -35,17 +36,17 @@ export function registerHealthTools(server: McpServer, env: Env, userId: string)
                 }
 
                 try {
-                    await env.KV.get("__health_check__");
-                    checks["KV"] = "OK — reachable";
+                    await getKV("__health_check__", env);
+                    checks["Cache"] = `OK — backed by ${kvBackend(env) === "kv" ? "KV" : "D1 (kv_store fallback)"}`;
                 } catch (e) {
-                    checks["KV"] = `FAIL — ${String(e)}`;
+                    checks["Cache"] = `FAIL — ${String(e)}`;
                 }
 
                 try {
                     const files = await listStaticFiles(userId, env);
-                    checks["R2"] = `OK — ${files.length} static files (${files.join(", ") || "none"})`;
+                    checks["Static files"] = `OK — backed by ${r2Backend(env) === "r2" ? "R2" : "D1 (static_files fallback)"}, ${files.length} files (${files.join(", ") || "none"})`;
                 } catch (e) {
-                    checks["R2"] = `FAIL — ${String(e)}`;
+                    checks["Static files"] = `FAIL — ${String(e)}`;
                 }
 
                 try {

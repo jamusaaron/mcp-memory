@@ -34,18 +34,13 @@
       "database_id": "a25fc989-398c-40de-9aae-569d662f0455"
     }
   ],
-  "kv_namespaces": [
-    {
-      "binding": "KV",
-      "id": "mcp-memory-kv"
-    }
-  ],
-  "r2_buckets": [
-    {
-      "binding": "R2",
-      "bucket_name": "mcp-memory-r2"
-    }
-  ],
+  // KV and R2 bindings are optional — the code falls back to D1 tables
+  // (kv_store, static_files) when they are absent. To use real KV/R2,
+  // create the resources in your Cloudflare account and uncomment with
+  // the actual namespace ID / bucket name:
+  //
+  // "kv_namespaces": [{ "binding": "KV", "id": "<your-kv-namespace-id>" }],
+  // "r2_buckets": [{ "binding": "R2", "bucket_name": "<your-bucket-name>" }],
   "durable_objects": {
     "bindings": [
       {

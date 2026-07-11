@@ -6,6 +6,7 @@ const activeFiles = [
 	"src/tools/people.ts",
 	"src/tools/uncertainty.ts",
 	"src/tools/session.ts",
+	"src/tools/context-docs.ts",
 	"src/tools/behavioral.ts",
 	"src/tools/ingestion.ts",
 	"src/tools/ai-agents.ts",
@@ -22,6 +23,7 @@ const forbidden = new Set([
 	"r2_bucket_delete",
 	"r2_buckets_list",
 ]);
+const EXPECTED_TOOLS = 110;
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );
@@ -33,7 +35,8 @@ const errors = [];
 for (const name of forbidden) {
 	if (names.includes(name)) errors.push(`forbidden tool registered: ${name}`);
 }
-if (names.length !== 97) errors.push(`expected 97 tools, found ${names.length}`);
+if (names.length !== EXPECTED_TOOLS)
+	errors.push(`expected ${EXPECTED_TOOLS} tools, found ${names.length}: ${names.join(", ")}`);
 if (new Set(names).size !== names.length) errors.push("duplicate tool names detected");
 for (const [file, source] of activeSources) {
 	if (/\bR2\b|utils\/r2|R2_BUCKET/.test(source)) {

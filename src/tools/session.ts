@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { insertSessionLog, getSessionLogs, getRecentSessions, queryMemories, getMemoryIndex, getWriteActivity } from "../utils/db";
+import { insertSessionLog, getSessionLogs, getRecentSessions, queryMemories, getMemoryIndex, getWriteActivity, listUncertainties, getPinnedMemories, getMemoriesNeedingReverification } from "../utils/db";
 import { getLivingSummary, putLivingSummary, putSessionState, getSessionState } from "../utils/kv";
 import { writeStaticFile, readStaticFile } from "../utils/static-context";
 import { generateSummary } from "../utils/ai";
@@ -9,27 +9,64 @@ import { generateSummary } from "../utils/ai";
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "get_session_brief",
-        "Start a new session by loading the user's living summary, recent activity, and current context. Call this at the beginning of every conversation to ensure continuity across sessions. Returns a comprehensive brief including memory store stats, the living summary, current context, and recent session history.",
+        "Start a new session by loading the user's living summary, recent activity, and current context. Call this at the beginning of every conversation to ensure continuity across sessions. Returns a comprehensive brief including memory store stats, pinned memories, open uncertainties, the living summary, current context, and recent session history.",
         { session_id: z.string().optional().describe("Session ID — auto-generated if omitted") },
         async ({ session_id }) => {
             try {
                 const sid = session_id ?? uuidv4();
                 await putSessionState(userId, sid, JSON.stringify({ started: new Date().toISOString() }), env);
 
-                const summary = await getLivingSummary(userId, env);
-                const recentSessions = await getRecentSessions(userId, env, 3);
-                const index = await getMemoryIndex(userId, env);
-                const contextCurrent = await readStaticFile(userId, "context_current", env);
+                const [summary, recentSessions, index, contextCurrent, selfProfile, pinned, openQs, reverify] =
+                    await Promise.all([
+                        getLivingSummary(userId, env),
+                        getRecentSessions(userId, env, 3),
+                        getMemoryIndex(userId, env),
+                        readStaticFile(userId, "context_current", env),
+                        readStaticFile(userId, "self_profile", env),
+                        getPinnedMemories(userId, env, 10),
+                        listUncertainties(userId, env, "open"),
+                        getMemoriesNeedingReverification(userId, env, 30),
+                    ]);
 
                 let brief = `# Session Brief (${sid})\n\n`;
-                brief += `## Memory Store\n${index.total} memories across ${Object.keys(index.by_category).length} categories\n\n`;
+                brief += `## Memory Store\n${index.total} memories across ${Object.keys(index.by_category).length} categories`;
+                brief += ` | embedded ${index.embedded} | pending ${index.pending_embedding} | suppressed ${index.suppressed}\n\n`;
 
                 if (summary) {
                     brief += `## Living Summary\n${summary}\n\n`;
                 }
 
+                if (selfProfile) {
+                    brief += `## Self Profile\n${selfProfile.slice(0, 1500)}${selfProfile.length > 1500 ? "…" : ""}\n\n`;
+                }
+
                 if (contextCurrent) {
                     brief += `## Current Context\n${contextCurrent}\n\n`;
+                }
+
+                if (pinned.length > 0) {
+                    brief += `## Pinned Memories\n`;
+                    for (const p of pinned) {
+                        brief += `- 📌 [${p.category}] ${p.text}\n`;
+                    }
+                    brief += "\n";
+                }
+
+                if (openQs.length > 0) {
+                    brief += `## Open Uncertainties (${openQs.length})\n`;
+                    for (const u of openQs.slice(0, 8)) {
+                        brief += `- [${u.id}] ${u.question}\n`;
+                    }
+                    if (openQs.length > 8) brief += `- …and ${openQs.length - 8} more\n`;
+                    brief += "\n";
+                }
+
+                if (reverify.length > 0) {
+                    brief += `## Needs Reverification (${reverify.length})\n`;
+                    for (const m of reverify.slice(0, 5)) {
+                        brief += `- conf ${m.confidence.toFixed(2)}: ${m.text.slice(0, 100)}\n`;
+                    }
+                    brief += "\n";
                 }
 
                 if (recentSessions.length > 0) {

@@ -4,6 +4,7 @@ import { version } from "../package.json";
 
 import { registerAiAgentTools } from "./tools/ai-agents";
 import { registerBehavioralTools } from "./tools/behavioral";
+import { registerContextDocTools } from "./tools/context-docs";
 import { registerHealthTools } from "./tools/health";
 import { registerInfraTools } from "./tools/infra";
 import { registerIngestionTools } from "./tools/ingestion";
@@ -33,6 +34,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		registerPeopleTools(this.server, env, userId);
 		registerUncertaintyTools(this.server, env, userId);
 		registerSessionTools(this.server, env, userId);
+		registerContextDocTools(this.server, env, userId);
 		registerBehavioralTools(this.server, env, userId);
 		registerIngestionTools(this.server, env, userId);
 		registerAiAgentTools(this.server, env, userId);

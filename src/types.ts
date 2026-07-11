@@ -33,6 +33,8 @@ export interface Memory {
     embedding_status: "pending" | "embedded";
     suppressed: boolean;
     suppression_reason: string | null;
+    pinned: boolean;
+    access_count: number;
     last_accessed: string | null;
     last_verified: string | null;
     created_at: string;

@@ -4,20 +4,44 @@ import { CATEGORIES, LAYERS, type Memory, SOURCE_TYPES } from "../types";
 import { analyzePatterns, detectContradictions, generateSummary, triageText } from "../utils/ai";
 import {
 	deleteMemory,
+	fulltextSearchMemories,
+	getHighSalienceMemories,
 	getMemoriesNeedingReverification,
 	getMemoryById,
 	getMemoryIndex,
+	getPinnedMemories,
 	getSuppressedMemories,
 	getUnembeddedMemories,
 	insertMemory,
+	memoryExistsByText,
 	queryMemories,
 	queryMemoriesByDate,
 	queryMemoriesByTags,
+	touchMemoryAccessBatch,
 	updateMemory,
 } from "../utils/db";
 import { putLivingSummary } from "../utils/kv";
 import { toolError, toolText } from "../utils/tool-result";
-import { deleteVectorById, searchMemories, storeMemoryVector } from "../utils/vectorize";
+import {
+	deleteVectorById,
+	rerankMatches,
+	searchMemories,
+	storeMemoryVector,
+} from "../utils/vectorize";
+
+async function embedMemory(
+	memory: { id: string; text: string; category?: string; layer?: string; salience?: number; pinned?: boolean },
+	userId: string,
+	env: Env,
+): Promise<void> {
+	await storeMemoryVector(memory.id, memory.text, userId, env, {
+		category: memory.category ?? "knowledge",
+		layer: memory.layer ?? "current",
+		salience: memory.salience ?? 0.5,
+		pinned: memory.pinned ? 1 : 0,
+	});
+	await updateMemory(memory.id, userId, { embedding_status: "embedded" } as any, env);
+}
 
 export function registerMemoryTools(server: McpServer, env: Env, userId: string) {
 	server.tool(
@@ -115,13 +139,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 
 				let embeddingWarning = "";
 				try {
-					await storeMemoryVector(memory.id, params.text, userId, env);
-					await updateMemory(
-						memory.id,
-						userId,
-						{ embedding_status: "embedded" } as any,
-						env,
-					);
+					await embedMemory(memory, userId, env);
 				} catch (e) {
 					console.error("Embedding failed:", e);
 					embeddingWarning =
@@ -171,13 +189,9 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 						env,
 					);
 					try {
-						await storeMemoryVector(id, updates.text, userId, env);
-						await updateMemory(
-							id,
-							userId,
-							{ embedding_status: "embedded" } as any,
-							env,
-						);
+						const updated = await getMemoryById(id, userId, env);
+						if (updated) await embedMemory(updated, userId, env);
+						else await embedMemory({ id, text: updates.text }, userId, env);
 					} catch (error) {
 						return toolError(
 							new Error(
@@ -365,24 +379,62 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 		},
 		async ({ query, category, layer, limit }) => {
 			try {
-				const vectorResults = await searchMemories(query, userId, env, limit);
-
+				// Over-fetch for filter + hybrid re-rank
+				const vectorResults = await searchMemories(query, userId, env, Math.max(limit * 3, 15));
+				const boosts = new Map<
+					string,
+					{ salience?: number; confidence?: number; pinned?: boolean; access_count?: number }
+				>();
 				let results = vectorResults;
-				if (category || layer) {
+				if (category || layer || vectorResults.length > 0) {
 					const filtered = [];
 					for (const r of vectorResults) {
 						const mem = await getMemoryById(r.id, userId, env);
-						if (!mem) continue;
+						if (!mem || mem.suppressed) continue;
 						if (category && mem.category !== category) continue;
 						if (layer && mem.layer !== layer) continue;
+						boosts.set(r.id, {
+							salience: mem.salience,
+							confidence: mem.confidence,
+							pinned: mem.pinned,
+							access_count: mem.access_count,
+						});
 						filtered.push(r);
 					}
 					results = filtered;
 				}
 
+				results = rerankMatches(query, results, boosts).slice(0, limit);
+
 				if (results.length === 0) {
-					return { content: [{ type: "text", text: "No relevant memories found." }] };
+					// Keyword fallback when semantic search is empty
+					const keywordHits = await fulltextSearchMemories(userId, query, env, limit);
+					if (keywordHits.length === 0) {
+						return { content: [{ type: "text", text: "No relevant memories found." }] };
+					}
+					const formattedKw = keywordHits
+						.map((m) => `[${m.id}] [keyword] ${m.text}`)
+						.join("\n");
+					await touchMemoryAccessBatch(
+						keywordHits.map((m) => m.id),
+						userId,
+						env,
+					);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${keywordHits.length} memories (keyword fallback):\n${formattedKw}`,
+							},
+						],
+					};
 				}
+
+				await touchMemoryAccessBatch(
+					results.map((r) => r.id),
+					userId,
+					env,
+				);
 
 				const formatted = results
 					.map((r) => `[${r.id}] (score: ${r.score.toFixed(3)}) ${r.content}`)
@@ -978,13 +1030,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 				let failed = 0;
 				for (const m of unembedded) {
 					try {
-						await storeMemoryVector(m.id, m.text, userId, env);
-						await updateMemory(
-							m.id,
-							userId,
-							{ embedding_status: "embedded" } as any,
-							env,
-						);
+						await embedMemory(m, userId, env);
 						success++;
 					} catch {
 						failed++;
@@ -1019,8 +1065,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 				if (!memory)
 					return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
 
-				await storeMemoryVector(id, memory.text, userId, env);
-				await updateMemory(id, userId, { embedding_status: "embedded" } as any, env);
+				await embedMemory(memory, userId, env);
 
 				return { content: [{ type: "text", text: `Memory ${id} embedded successfully.` }] };
 			} catch (error) {
@@ -1263,6 +1308,455 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 						{ type: "text", text: "Failed to list reverify queue: " + String(error) },
 					],
 				};
+			}
+		},
+	);
+
+	// ── High-value convenience tools ──
+
+	server.tool(
+		"remember",
+		"Quick-store a memory with AI triage. Automatically categorizes, scores confidence/salience, detects duplicates, and embeds. Prefer this over write_memory when you don't want to pick metadata manually.",
+		{
+			text: z.string().describe("Fact or preference to remember"),
+			force: z
+				.boolean()
+				.optional()
+				.default(false)
+				.describe("Store even if triage says not worth storing"),
+		},
+		async ({ text, force }) => {
+			try {
+				const triage = await triageText(text, env);
+				if (!triage.worth_storing && !force) {
+					return toolText(
+						`Not stored (triage: not worth storing). Category would be ${triage.category}. Pass force=true to store anyway.`,
+					);
+				}
+
+				const existing = await searchMemories(text, userId, env, 3);
+				const dup = existing.find((e) => e.score > 0.92);
+				if (dup) {
+					return toolText(
+						`Skipped — near-duplicate of [${dup.id}] (score ${dup.score.toFixed(3)}): ${dup.content}`,
+					);
+				}
+
+				const memory = await insertMemory(
+					{
+						userId,
+						text,
+						category: triage.category as any,
+						layer: triage.layer as any,
+						confidence: triage.confidence,
+						salience: triage.salience,
+						emotion_weight: triage.emotion_weight,
+						tags: triage.tags,
+						subject: triage.subject,
+						source_type: "stated",
+					},
+					env,
+				);
+
+				try {
+					await embedMemory(memory, userId, env);
+				} catch (e) {
+					console.error("remember embed failed:", e);
+				}
+
+				return toolText(
+					`Remembered [${memory.id}] as ${triage.category}/${triage.layer} (conf ${triage.confidence}, sal ${triage.salience}): ${text}`,
+				);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"recall",
+		"Best-effort hybrid recall for a topic: semantic search + keyword search + re-ranking by salience/pins/access. Use this as the primary 'what do I know about X?' tool.",
+		{
+			query: z.string().describe("Topic or question to recall about"),
+			limit: z.number().optional().default(12).describe("Max memories to return"),
+			categories: z.array(z.enum(CATEGORIES)).optional().describe("Optional category filter"),
+		},
+		async ({ query, limit, categories }) => {
+			try {
+				const [vectorHits, keywordHits, pinned] = await Promise.all([
+					searchMemories(query, userId, env, limit * 3),
+					fulltextSearchMemories(userId, query, env, limit),
+					getPinnedMemories(userId, env, 20),
+				]);
+
+				const byId = new Map<string, { content: string; score: number }>();
+				for (const h of vectorHits) byId.set(h.id, { content: h.content, score: h.score });
+				for (const m of keywordHits) {
+					const prev = byId.get(m.id);
+					const kwScore = 0.55;
+					if (!prev || kwScore > prev.score * 0.9) {
+						byId.set(m.id, {
+							content: m.text,
+							score: prev ? Math.max(prev.score, kwScore) + 0.05 : kwScore,
+						});
+					}
+				}
+				// Always surface pins that loosely match
+				const qLower = query.toLowerCase();
+				for (const p of pinned) {
+					if (
+						p.text.toLowerCase().includes(qLower) ||
+						p.tags.some((t) => qLower.includes(t.toLowerCase())) ||
+						!byId.has(p.id)
+					) {
+						const prev = byId.get(p.id);
+						byId.set(p.id, {
+							content: p.text,
+							score: (prev?.score ?? 0.5) + 0.15,
+						});
+					}
+				}
+
+				const boosts = new Map<
+					string,
+					{ salience?: number; confidence?: number; pinned?: boolean; access_count?: number }
+				>();
+				const candidates = [];
+				for (const [id, hit] of byId) {
+					const mem = await getMemoryById(id, userId, env);
+					if (!mem || mem.suppressed) continue;
+					if (categories?.length && !categories.includes(mem.category as any)) continue;
+					boosts.set(id, {
+						salience: mem.salience,
+						confidence: mem.confidence,
+						pinned: mem.pinned,
+						access_count: mem.access_count,
+					});
+					candidates.push({
+						id,
+						content: hit.content,
+						score: hit.score,
+						category: mem.category,
+						layer: mem.layer,
+						salience: mem.salience,
+					});
+				}
+
+				const ranked = rerankMatches(query, candidates, boosts).slice(0, limit);
+				if (ranked.length === 0) {
+					return toolText(`Nothing recalled for "${query}".`);
+				}
+
+				await touchMemoryAccessBatch(
+					ranked.map((r) => r.id),
+					userId,
+					env,
+				);
+
+				const lines = ranked.map(
+					(r) =>
+						`- [${r.id}] (${r.score.toFixed(3)}) ${r.content}${
+							boosts.get(r.id)?.pinned ? " 📌" : ""
+						}`,
+				);
+				return toolText(`Recall for "${query}" (${ranked.length}):\n${lines.join("\n")}`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"fulltext_search",
+		"Keyword/substring search over memory text, subjects, and tags. Use when you need exact word matches rather than semantic similarity.",
+		{
+			query: z.string().describe("Keywords to search for"),
+			limit: z.number().optional().default(25),
+		},
+		async ({ query, limit }) => {
+			try {
+				const memories = await fulltextSearchMemories(userId, query, env, limit);
+				if (memories.length === 0) {
+					return toolText(`No keyword matches for "${query}".`);
+				}
+				await touchMemoryAccessBatch(
+					memories.map((m) => m.id),
+					userId,
+					env,
+				);
+				const formatted = memories
+					.map((m) => `[${m.id}] [${m.category}] ${m.text}`)
+					.join("\n");
+				return toolText(`${memories.length} keyword matches:\n${formatted}`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"pin_memory",
+		"Pin a memory so it is always prioritized in recall and session context. Use for critical standing facts.",
+		{ id: z.string().describe("Memory ID to pin") },
+		async ({ id }) => {
+			try {
+				const memory = await getMemoryById(id, userId, env);
+				if (!memory) return toolText(`Memory ${id} not found.`);
+				await updateMemory(id, userId, { pinned: true } as any, env);
+				try {
+					await embedMemory({ ...memory, pinned: true }, userId, env);
+				} catch {
+					/* best effort */
+				}
+				return toolText(`Memory ${id} pinned.`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"unpin_memory",
+		"Remove the pin from a memory.",
+		{ id: z.string().describe("Memory ID to unpin") },
+		async ({ id }) => {
+			try {
+				const memory = await getMemoryById(id, userId, env);
+				if (!memory) return toolText(`Memory ${id} not found.`);
+				await updateMemory(id, userId, { pinned: false } as any, env);
+				return toolText(`Memory ${id} unpinned.`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"list_pinned_memories",
+		"List all pinned memories, ordered by salience. Use when loading critical standing context.",
+		{ limit: z.number().optional().default(50) },
+		async ({ limit }) => {
+			try {
+				const memories = await getPinnedMemories(userId, env, limit);
+				if (memories.length === 0) return toolText("No pinned memories.");
+				const formatted = memories
+					.map((m) => `📌 [${m.id}] [${m.category}] ${m.text}`)
+					.join("\n");
+				return toolText(`${memories.length} pinned memories:\n${formatted}`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"get_high_salience",
+		"Return the highest-salience (most important) active memories. Useful for building a priority context pack.",
+		{
+			min_salience: z.number().min(0).max(1).optional().default(0.7),
+			limit: z.number().optional().default(25),
+		},
+		async ({ min_salience, limit }) => {
+			try {
+				const memories = await getHighSalienceMemories(userId, env, min_salience, limit);
+				if (memories.length === 0) {
+					return toolText(`No memories with salience >= ${min_salience}.`);
+				}
+				const formatted = memories
+					.map(
+						(m) =>
+							`[${m.id}] sal:${m.salience.toFixed(2)} conf:${m.confidence.toFixed(2)} ${m.text}`,
+					)
+					.join("\n");
+				return toolText(`${memories.length} high-salience memories:\n${formatted}`);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"batch_write_memories",
+		"Store multiple memories in one call. Each item is stored and embedded independently. Best for bulk capture after a long conversation.",
+		{
+			items: z
+				.array(
+					z.object({
+						text: z.string(),
+						category: z.enum(CATEGORIES).optional(),
+						layer: z.enum(LAYERS).optional(),
+						tags: z.array(z.string()).optional(),
+						confidence: z.number().min(0).max(1).optional(),
+						salience: z.number().min(0).max(1).optional(),
+					}),
+				)
+				.min(1)
+				.max(25)
+				.describe("Memories to store (max 25)"),
+			skip_duplicates: z
+				.boolean()
+				.optional()
+				.default(true)
+				.describe("Skip exact-text duplicates"),
+		},
+		async ({ items, skip_duplicates }) => {
+			try {
+				const results: string[] = [];
+				let stored = 0;
+				let skipped = 0;
+				for (const item of items) {
+					if (skip_duplicates) {
+						const existing = await memoryExistsByText(userId, item.text, env);
+						if (existing) {
+							skipped++;
+							results.push(`skip exact-dup of ${existing.id}: ${item.text.slice(0, 60)}`);
+							continue;
+						}
+					}
+					const memory = await insertMemory({ userId, ...item }, env);
+					try {
+						await embedMemory(memory, userId, env);
+					} catch {
+						/* pending */
+					}
+					stored++;
+					results.push(`ok [${memory.id}] ${item.text.slice(0, 60)}`);
+				}
+				return toolText(
+					`Batch write: ${stored} stored, ${skipped} skipped.\n${results.join("\n")}`,
+				);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+	);
+
+	server.tool(
+		"import_memories",
+		"Import memories from a JSON export (from export_memories). Restores text and metadata; regenerates embeddings. Skips IDs that already exist unless overwrite=true.",
+		{
+			payload: z
+				.string()
+				.describe("JSON string from export_memories (full document or memories array)"),
+			overwrite: z
+				.boolean()
+				.optional()
+				.default(false)
+				.describe("If true, update existing IDs; otherwise skip them"),
+		},
+		async ({ payload, overwrite }) => {
+			try {
+				const parsed = JSON.parse(payload);
+				const items: Array<Record<string, unknown>> = Array.isArray(parsed)
+					? parsed
+					: Array.isArray(parsed.memories)
+						? parsed.memories
+						: [];
+				if (items.length === 0) {
+					return toolText("No memories found in payload.");
+				}
+
+				let imported = 0;
+				let updated = 0;
+				let skipped = 0;
+				let failed = 0;
+
+				for (const item of items.slice(0, 200)) {
+					const text = String(item.text ?? "").trim();
+					if (!text) {
+						failed++;
+						continue;
+					}
+					const id = typeof item.id === "string" ? item.id : undefined;
+					try {
+						if (id) {
+							const existing = await getMemoryById(id, userId, env);
+							if (existing) {
+								if (!overwrite) {
+									skipped++;
+									continue;
+								}
+								await updateMemory(
+									id,
+									userId,
+									{
+										text,
+										category: (item.category as any) ?? existing.category,
+										layer: (item.layer as any) ?? existing.layer,
+										subject: (item.subject as any) ?? existing.subject,
+										tags: (item.tags as any) ?? existing.tags,
+										triggers: (item.triggers as any) ?? existing.triggers,
+										confidence:
+											typeof item.confidence === "number"
+												? item.confidence
+												: existing.confidence,
+										salience:
+											typeof item.salience === "number"
+												? item.salience
+												: existing.salience,
+										emotion_weight:
+											typeof item.emotion_weight === "number"
+												? item.emotion_weight
+												: existing.emotion_weight,
+										source_type: (item.source_type as any) ?? existing.source_type,
+										linked_people:
+											(item.linked_people as any) ?? existing.linked_people,
+										suppressed: Boolean(item.suppressed ?? false),
+										suppression_reason:
+											(item.suppression_reason as string | null) ?? null,
+										pinned: Boolean(item.pinned ?? existing.pinned),
+									} as any,
+									env,
+								);
+								const mem = await getMemoryById(id, userId, env);
+								if (mem) {
+									try {
+										await embedMemory(mem, userId, env);
+									} catch {
+										/* */
+									}
+								}
+								updated++;
+								continue;
+							}
+						}
+
+						const memory = await insertMemory(
+							{
+								id,
+								userId,
+								text,
+								category: item.category as any,
+								layer: item.layer as any,
+								subject: item.subject as any,
+								tags: item.tags as any,
+								triggers: item.triggers as any,
+								confidence: item.confidence as any,
+								salience: item.salience as any,
+								emotion_weight: item.emotion_weight as any,
+								source_type: item.source_type as any,
+								linked_people: item.linked_people as any,
+								pinned: Boolean(item.pinned),
+							},
+							env,
+						);
+						try {
+							await embedMemory(memory, userId, env);
+						} catch {
+							/* */
+						}
+						imported++;
+					} catch (e) {
+						console.error("import item failed:", e);
+						failed++;
+					}
+				}
+
+				return toolText(
+					`Import complete: ${imported} new, ${updated} updated, ${skipped} skipped, ${failed} failed (of ${items.length}, max 200 processed).`,
+				);
+			} catch (error) {
+				return toolError(error);
 			}
 		},
 	);

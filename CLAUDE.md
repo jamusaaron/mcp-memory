@@ -1,6 +1,6 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 97 tools and no R2 subscription dependency.
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 110 tools and no R2 subscription dependency.
 
 ## Stack
 
@@ -18,17 +18,18 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/mcp.ts` — MCP server aggregating all tool groups
 - `src/schema.ts` — D1 database migrations (10 tables)
 - `src/types.ts` — Type definitions for all data models
-- `src/tools/memory.ts` — Memory CRUD, search, maintenance, and analysis
+- `src/tools/memory.ts` — Memory CRUD, hybrid search, pins, import/export, maintenance
 - `src/tools/people.ts` — People/profile management
 - `src/tools/uncertainty.ts` — Uncertainty/clarification loop
-- `src/tools/session.ts` — Session lifecycle
+- `src/tools/session.ts` — Session lifecycle with rich briefs
+- `src/tools/context-docs.ts` — KV-backed persistent context documents
 - `src/tools/behavioral.ts` — Behavioral and personality modeling
 - `src/tools/ingestion.ts` — Ingestion pipeline (3 tools)
 - `src/tools/ai-agents.ts` — Cross-agent shared memory
 - `src/tools/health.ts` — System health and degraded-capability reporting
 - `src/tools/infra.ts` — Cloudflare infra passthrough (22 tools; optional credentials required)
-- `src/utils/db.ts` — D1 database operations
-- `src/utils/vectorize.ts` — Vectorize embedding and search
+- `src/utils/db.ts` — D1 database operations (incl. fulltext, pins, access tracking)
+- `src/utils/vectorize.ts` — Vectorize embedding, hybrid re-rank, metadata
 - `src/utils/kv.ts` — KV cache operations
 - `src/utils/static-context.ts` — KV-backed persistent context operations
 - `src/utils/cloudflare-api.ts` — validated optional Cloudflare account API access
@@ -46,7 +47,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 
 ## Architecture
 
-Each user gets an isolated namespace. Memories are structured with category, layer, confidence, salience, and emotion weight. The system supports contradiction detection, confidence decay, write cascades, and semantic search. The MCP server runs as a Durable Object mounted at `/{userId}/sse`.
+Each user gets an isolated namespace. Memories are structured with category, layer, confidence, salience, emotion weight, pins, and access counts. The system supports hybrid semantic+keyword search, contradiction detection, confidence decay, import/export, and KV-backed context docs (no R2). The MCP server runs as a Durable Object mounted at `/{userId}/sse`.
 
 ## MCP Server Configuration
 

@@ -31,6 +31,8 @@ function rowToMemory(row: Record<string, unknown>): Memory {
 		triggers: parseJsonField(row.triggers, []),
 		linked_people: parseJsonField(row.linked_people, []),
 		suppressed: Boolean(row.suppressed),
+		pinned: Boolean(row.pinned),
+		access_count: Number(row.access_count ?? 0),
 	} as unknown as Memory;
 }
 
@@ -43,8 +45,8 @@ export async function insertMemory(
 	const id = m.id ?? uuidv4();
 	const now = new Date().toISOString();
 	await env.DB.prepare(
-		`INSERT INTO memories (id,userId,category,layer,subject,text,tags,triggers,confidence,salience,emotion_weight,source_type,linked_people,embedding_status,suppressed,suppression_reason,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO memories (id,userId,category,layer,subject,text,tags,triggers,confidence,salience,emotion_weight,source_type,linked_people,embedding_status,suppressed,suppression_reason,pinned,access_count,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 	)
 		.bind(
 			id,
@@ -63,6 +65,8 @@ export async function insertMemory(
 			"pending",
 			0,
 			null,
+			m.pinned ? 1 : 0,
+			m.access_count ?? 0,
 			now,
 			now,
 		)
@@ -87,7 +91,9 @@ export async function updateMemory(
 	const vals: unknown[] = [];
 	for (const [k, v] of Object.entries(updates)) {
 		if (["id", "userId", "created_at"].includes(k)) continue;
-		const val = Array.isArray(v) ? JSON.stringify(v) : v;
+		let val: unknown = v;
+		if (Array.isArray(v)) val = JSON.stringify(v);
+		else if (typeof v === "boolean") val = v ? 1 : 0;
 		sets.push(`${k}=?`);
 		vals.push(val);
 	}
@@ -752,6 +758,94 @@ export async function getSuppressedMemories(
 		.bind(userId, limit)
 		.all();
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function touchMemoryAccess(id: string, userId: string, env: Env): Promise<void> {
+	const now = new Date().toISOString();
+	await env.DB.prepare(
+		"UPDATE memories SET last_accessed=?, access_count=COALESCE(access_count,0)+1 WHERE id=? AND userId=?",
+	)
+		.bind(now, id, userId)
+		.run();
+}
+
+export async function touchMemoryAccessBatch(ids: string[], userId: string, env: Env): Promise<void> {
+	if (ids.length === 0) return;
+	const batch = ids.slice(0, 25);
+	await Promise.all(batch.map((id) => touchMemoryAccess(id, userId, env)));
+}
+
+export async function fulltextSearchMemories(
+	userId: string,
+	query: string,
+	env: Env,
+	limit = 25,
+): Promise<Memory[]> {
+	const tokens = query
+		.toLowerCase()
+		.split(/[^a-z0-9_]+/)
+		.filter((t) => t.length > 2)
+		.slice(0, 6);
+	if (tokens.length === 0) {
+		const res = await env.DB.prepare(
+			"SELECT * FROM memories WHERE userId=? AND suppressed=0 AND text LIKE ? ORDER BY salience DESC LIMIT ?",
+		)
+			.bind(userId, `%${query}%`, limit)
+			.all();
+		return (res.results as Record<string, unknown>[]).map(rowToMemory);
+	}
+
+	const conditions = tokens
+		.map(() => "(LOWER(text) LIKE ? OR LOWER(COALESCE(subject,'')) LIKE ? OR LOWER(tags) LIKE ?)")
+		.join(" OR ");
+	const params: unknown[] = [userId];
+	for (const t of tokens) {
+		const p = `%${t}%`;
+		params.push(p, p, p);
+	}
+	params.push(limit);
+	const res = await env.DB.prepare(
+		`SELECT * FROM memories WHERE userId=? AND suppressed=0 AND (${conditions}) ORDER BY salience DESC, confidence DESC LIMIT ?`,
+	)
+		.bind(...params)
+		.all();
+	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function getPinnedMemories(userId: string, env: Env, limit = 50): Promise<Memory[]> {
+	const res = await env.DB.prepare(
+		"SELECT * FROM memories WHERE userId=? AND suppressed=0 AND pinned=1 ORDER BY salience DESC, updated_at DESC LIMIT ?",
+	)
+		.bind(userId, limit)
+		.all();
+	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function getHighSalienceMemories(
+	userId: string,
+	env: Env,
+	minSalience = 0.7,
+	limit = 25,
+): Promise<Memory[]> {
+	const res = await env.DB.prepare(
+		"SELECT * FROM memories WHERE userId=? AND suppressed=0 AND salience>=? ORDER BY salience DESC, confidence DESC LIMIT ?",
+	)
+		.bind(userId, minSalience, limit)
+		.all();
+	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function memoryExistsByText(
+	userId: string,
+	text: string,
+	env: Env,
+): Promise<Memory | null> {
+	const row = await env.DB.prepare(
+		"SELECT * FROM memories WHERE userId=? AND suppressed=0 AND text=? LIMIT 1",
+	)
+		.bind(userId, text)
+		.first();
+	return row ? rowToMemory(row as Record<string, unknown>) : null;
 }
 
 // ── Extended Uncertainty Operations ──

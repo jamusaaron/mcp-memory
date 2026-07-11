@@ -131,8 +131,30 @@ const MIGRATIONS = [
     `CREATE INDEX IF NOT EXISTS idx_personality_user ON personality_feedback(userId)`,
 ];
 
+/** Additive column migrations — safe to re-run (errors ignored if column exists). */
+const COLUMN_MIGRATIONS = [
+    `ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0`,
+    `ALTER TABLE memories ADD COLUMN access_count INTEGER DEFAULT 0`,
+];
+
+const POST_COLUMN_INDEXES = [
+    `CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(userId, pinned)`,
+    `CREATE INDEX IF NOT EXISTS idx_memories_salience ON memories(userId, salience)`,
+    `CREATE INDEX IF NOT EXISTS idx_memories_text ON memories(userId, text)`,
+];
+
 export async function initializeDatabase(env: Env): Promise<void> {
     for (const sql of MIGRATIONS) {
+        await env.DB.prepare(sql).run();
+    }
+    for (const sql of COLUMN_MIGRATIONS) {
+        try {
+            await env.DB.prepare(sql).run();
+        } catch {
+            /* column already exists */
+        }
+    }
+    for (const sql of POST_COLUMN_INDEXES) {
         await env.DB.prepare(sql).run();
     }
     console.log("Database schema initialized.");

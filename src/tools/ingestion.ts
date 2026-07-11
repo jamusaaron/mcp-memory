@@ -16,7 +16,13 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
         async ({ source, content, auto_store }) => {
             try {
                 const transcriptId = await insertTranscript(userId, source, content, env);
-                const extracted = await extractFromTranscript(content, env);
+
+                let extracted: Awaited<ReturnType<typeof extractFromTranscript>>;
+                try {
+                    extracted = await extractFromTranscript(content, env);
+                } catch (e) {
+                    return { content: [{ type: "text", text: `Transcript saved [${transcriptId}] but AI extraction is unavailable (${String(e).split("\n")[0]}). The raw transcript is stored — re-run ingest_transcript when Workers AI is reachable, or extract memories manually with write_memory.` }] };
+                }
 
                 if (extracted.length === 0) {
                     await markTranscriptProcessed(transcriptId, userId, 0, env);
@@ -91,18 +97,32 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
         },
         async ({ text, source }) => {
             try {
-                const triage = await triageText(text, env);
+                let triage: Awaited<ReturnType<typeof triageText>>;
+                let triageSkipped = false;
+                try {
+                    triage = await triageText(text, env);
+                } catch (e) {
+                    console.error("AI triage unavailable, storing with defaults:", e);
+                    triageSkipped = true;
+                    triage = {
+                        worth_storing: true, category: "knowledge", layer: "current",
+                        confidence: 0.6, salience: 0.5, emotion_weight: 0.0,
+                        tags: [], subject: text.slice(0, 50),
+                    };
+                }
 
                 if (!triage.worth_storing) {
                     return { content: [{ type: "text", text: `Triaged as not worth storing. Category: ${triage.category}, Confidence: ${triage.confidence}` }] };
                 }
 
-                const existing = await searchMemories(text, userId, env, 3);
-                const isDuplicate = existing.some(e => e.score > 0.9);
+                try {
+                    const existing = await searchMemories(text, userId, env, 3);
+                    const isDuplicate = existing.some(e => e.score > 0.9);
 
-                if (isDuplicate) {
-                    return { content: [{ type: "text", text: `Triaged as duplicate of existing memory. Closest match: ${existing[0].content} (score: ${existing[0].score.toFixed(3)})` }] };
-                }
+                    if (isDuplicate) {
+                        return { content: [{ type: "text", text: `Triaged as duplicate of existing memory. Closest match: ${existing[0].content} (score: ${existing[0].score.toFixed(3)})` }] };
+                    }
+                } catch { /* duplicate check needs Vectorize — skip when unavailable */ }
 
                 const memory = await insertMemory({
                     userId,
@@ -122,7 +142,8 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
                     await env.DB.prepare("UPDATE memories SET embedding_status='embedded' WHERE id=?").bind(memory.id).run();
                 } catch { /* best effort */ }
 
-                return { content: [{ type: "text", text: `Stored as memory [${memory.id}]: category=${triage.category}, layer=${triage.layer}, confidence=${triage.confidence}` }] };
+                const note = triageSkipped ? " (AI triage unavailable — stored with default categorization; use edit_memory to refine)" : "";
+                return { content: [{ type: "text", text: `Stored as memory [${memory.id}]: category=${triage.category}, layer=${triage.layer}, confidence=${triage.confidence}${note}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to process inbound: " + String(error) }] };
             }

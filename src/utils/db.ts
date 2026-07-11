@@ -398,6 +398,29 @@ export async function getSuppressedMemories(userId: string, env: Env, limit: num
     return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }
 
+export async function keywordSearchMemories(userId: string, query: string, env: Env, limit: number = 10): Promise<Array<{ id: string; content: string; score: number }>> {
+    const terms = query.toLowerCase().split(/\s+/).filter(t => t.length >= 3).slice(0, 8);
+    if (terms.length === 0) return [];
+
+    const conditions = terms.map(() => "(lower(text) LIKE ? OR lower(subject) LIKE ? OR lower(tags) LIKE ? OR lower(triggers) LIKE ?)").join(" OR ");
+    const params: unknown[] = [userId];
+    for (const t of terms) {
+        const like = `%${t}%`;
+        params.push(like, like, like, like);
+    }
+
+    const res = await env.DB.prepare(
+        `SELECT * FROM memories WHERE userId=? AND suppressed=0 AND (${conditions}) ORDER BY salience DESC, created_at DESC LIMIT ?`
+    ).bind(...params, limit * 3).all();
+
+    const memories = (res.results as Record<string, unknown>[]).map(rowToMemory);
+    return memories.map(m => {
+        const haystack = `${m.text} ${m.subject ?? ""} ${(m.tags ?? []).join(" ")} ${(m.triggers ?? []).join(" ")}`.toLowerCase();
+        const hits = terms.filter(t => haystack.includes(t)).length;
+        return { id: m.id, content: m.text, score: hits / terms.length };
+    }).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
 // ── Extended Uncertainty Operations ──
 
 export async function dismissUncertainty(id: string, userId: string, env: Env): Promise<void> {

@@ -117,6 +117,21 @@ const MIGRATIONS = [
     )`,
     `CREATE INDEX IF NOT EXISTS idx_behavioral_user ON behavioral_observations(userId)`,
 
+    `CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        expires_at TEXT,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    `CREATE TABLE IF NOT EXISTS static_files (
+        userId TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        content TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (userId, filename)
+    )`,
+
     `CREATE TABLE IF NOT EXISTS personality_feedback (
         id TEXT PRIMARY KEY,
         userId TEXT NOT NULL,

@@ -5,9 +5,9 @@ declare namespace Cloudflare {
 	interface Env {
 		MCP_OBJECT: DurableObjectNamespace /* MyMCP */;
 		DB: D1Database;
-		KV: KVNamespace;
-		R2: R2Bucket;
-		RATE_LIMITER: RateLimit;
+		// Optional bindings — code falls back to D1 when absent (see src/utils/kv.ts, src/utils/r2.ts)
+		KV?: KVNamespace;
+		R2?: R2Bucket;
 		VECTORIZE: VectorizeIndex;
 		AI: Ai;
 		ASSETS: Fetcher;

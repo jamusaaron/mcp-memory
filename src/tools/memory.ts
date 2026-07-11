@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getUnembeddedMemories, getSuppressedMemories } from "../utils/db";
-import { storeMemoryVector, searchMemories, deleteVectorById } from "../utils/vectorize";
+import { storeMemoryVector, searchMemories, searchMemoriesWithFallback, deleteVectorById } from "../utils/vectorize";
 import { triageText, detectContradictions, analyzePatterns, generateSummary } from "../utils/ai";
 import { putLivingSummary } from "../utils/kv";
 import { CATEGORIES, LAYERS, SOURCE_TYPES } from "../types";
@@ -60,6 +60,47 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to write memory: " + String(error) }] };
             }
+        }
+    );
+
+    server.tool(
+        "batch_write_memories",
+        "Store multiple memories in a single call. Use this for bulk imports — seeding a new memory store, migrating from another system, or capturing several distinct facts from one conversation. Each memory is inserted and embedded (best effort); contradiction detection is skipped for speed, so run run_consolidation afterwards if importing into an existing store.",
+        {
+            memories: z.array(z.object({
+                text: z.string().describe("The memory content — a complete, self-contained statement"),
+                category: z.enum(CATEGORIES).optional(),
+                layer: z.enum(LAYERS).optional(),
+                subject: z.string().optional(),
+                tags: z.array(z.string()).optional(),
+                confidence: z.number().min(0).max(1).optional(),
+                salience: z.number().min(0).max(1).optional(),
+                source_type: z.enum(SOURCE_TYPES).optional(),
+            })).min(1).max(50).describe("Memories to store (1-50 per call)"),
+        },
+        async ({ memories }) => {
+            const stored: string[] = [];
+            const failed: string[] = [];
+            let embedded = 0;
+
+            for (const m of memories) {
+                try {
+                    const memory = await insertMemory({ userId, ...m }, env);
+                    stored.push(memory.id);
+                    try {
+                        await storeMemoryVector(memory.id, m.text, userId, env);
+                        await updateMemory(memory.id, userId, { embedding_status: "embedded" } as any, env);
+                        embedded++;
+                    } catch { /* best effort — backfill_embeddings can catch up later */ }
+                } catch (e) {
+                    failed.push(`"${m.text.slice(0, 60)}": ${String(e)}`);
+                }
+            }
+
+            let response = `Batch complete: ${stored.length}/${memories.length} stored, ${embedded} embedded.`;
+            if (embedded < stored.length) response += `\n${stored.length - embedded} pending embedding — run backfill_embeddings when Vectorize is available.`;
+            if (failed.length > 0) response += `\n\nFailed:\n${failed.join("\n")}`;
+            return { content: [{ type: "text", text: response }] };
         }
     );
 
@@ -191,7 +232,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "query_memories",
-        "Semantic search across memories using natural language. Returns the most relevant memories ranked by similarity score. Use this to find what you know about a topic before responding. Supports optional filtering by category and layer.",
+        "Semantic search across memories using natural language. Returns the most relevant memories ranked by similarity score. Use this to find what you know about a topic before responding. Supports optional filtering by category and layer. Falls back to keyword search automatically if the vector index is unavailable.",
         {
             query: z.string().describe("Natural language search query (e.g., 'What programming languages does the user prefer?')"),
             category: z.enum(CATEGORIES).optional().describe("Filter to a specific category"),
@@ -200,7 +241,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async ({ query, category, layer, limit }) => {
             try {
-                const vectorResults = await searchMemories(query, userId, env, limit);
+                const { results: vectorResults, mode } = await searchMemoriesWithFallback(query, userId, env, limit);
 
                 let results = vectorResults;
                 if (category || layer) {
@@ -220,7 +261,8 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 }
 
                 const formatted = results.map(r => `[${r.id}] (score: ${r.score.toFixed(3)}) ${r.content}`).join("\n");
-                return { content: [{ type: "text", text: `Found ${results.length} memories:\n${formatted}` }] };
+                const modeNote = mode === "keyword" ? " (keyword fallback — vector index unavailable)" : "";
+                return { content: [{ type: "text", text: `Found ${results.length} memories${modeNote}:\n${formatted}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to query memories: " + String(error) }] };
             }
@@ -283,7 +325,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async ({ query, categories, max_results }) => {
             try {
-                const vectorResults = await searchMemories(query, userId, env, max_results * 2);
+                const { results: vectorResults } = await searchMemoriesWithFallback(query, userId, env, max_results * 2);
                 let results = vectorResults;
 
                 if (categories?.length) {
@@ -318,7 +360,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 const memory = await getMemoryById(id, userId, env);
                 if (!memory) return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
 
-                const related = await searchMemories(memory.text, userId, env, 5);
+                const { results: related } = await searchMemoriesWithFallback(memory.text, userId, env, 5);
                 const relatedFiltered = related.filter(r => r.id !== id);
 
                 let text = `Memory [${memory.id}]:\n`;

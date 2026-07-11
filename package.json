@@ -3,6 +3,8 @@
 	"version": "0.0.1",
 	"private": true,
 	"scripts": {
+		"build": "tsc --noEmit",
+		"test": "tsc --noEmit",
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev --experimental-vectorize-bind-to-prod",
 		"format": "biome format --write",

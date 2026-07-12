@@ -69,8 +69,14 @@ export function policyForTarget(target: PromptTarget): string {
 		: PROMPT_POLICY;
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export function missingSections(output: string, required: string[]): string[] {
-	return required.filter((section) => !new RegExp(`^# ${section}\\s*$`, "im").test(output));
+	return required.filter(
+		(section) => !new RegExp(`^# ${escapeRegExp(section)}\\s*$`, "im").test(output),
+	);
 }
 
 const SCORE_KEYS = [
@@ -101,13 +107,17 @@ export function parsePromptEvaluation(text: string): PromptEvaluation {
 	if (verdict !== "ready" && verdict !== "revise" && verdict !== "insufficient_context") {
 		throw new Error("Prompt evaluation verdict is invalid");
 	}
-	const strings = (input: unknown): string[] =>
-		Array.isArray(input) && input.every((item) => typeof item === "string") ? input : [];
+	const strings = (field: string, input: unknown): string[] => {
+		if (!Array.isArray(input) || !input.every((item) => typeof item === "string")) {
+			throw new Error(`${field} must be an array of strings`);
+		}
+		return input;
+	};
 	return {
 		scores,
-		strengths: strings(value.strengths),
-		risks: strings(value.risks),
-		recommendedChanges: strings(value.recommended_changes),
+		strengths: strings("strengths", value.strengths),
+		risks: strings("risks", value.risks),
+		recommendedChanges: strings("recommended_changes", value.recommended_changes),
 		verdict,
 	};
 }

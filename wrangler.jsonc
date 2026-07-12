@@ -40,6 +40,12 @@
 			"id": "8920cd7c3b2347428da18c2713dbf81d"
 		}
 	],
+	"r2_buckets": [
+		{
+			"binding": "R2",
+			"bucket_name": "mcp-memory-r2"
+		}
+	],
 	"durable_objects": {
 		"bindings": [
 			{

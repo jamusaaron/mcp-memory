@@ -9,13 +9,13 @@ import {
 import { toolError, toolText } from "../utils/tool-result";
 
 /**
- * KV-backed persistent context documents (replaces object-storage static files).
- * Tool names avoid the retired storage-era names so the surface contract holds.
+ * Persistent context documents. Prefer R2 when bound; otherwise KV.
+ * Hot docs are mirrored to KV for fast session briefs.
  */
 export function registerContextDocTools(server: McpServer, env: Env, userId: string) {
 	server.tool(
 		"read_context_doc",
-		"Read a persistent context document (stored in KV). Common names: context_current, context_core, interaction_rules, ai_personality, self_profile, mood_tracker, personality_styles.",
+		"Read a persistent context document (R2 when available, else KV). Common names: context_current, context_core, interaction_rules, ai_personality, self_profile, mood_tracker, personality_styles.",
 		{
 			filename: z
 				.string()
@@ -39,7 +39,7 @@ export function registerContextDocTools(server: McpServer, env: Env, userId: str
 
 	server.tool(
 		"write_context_doc",
-		"Create or overwrite a persistent context document in KV. Use for standing notes that should load across sessions.",
+		"Create or overwrite a persistent context document. Uses R2 when bound (mirrored to KV for hot docs); otherwise KV only.",
 		{
 			filename: z.string().describe("Document name"),
 			content: z.string().describe("Document content (markdown recommended)"),
@@ -47,8 +47,10 @@ export function registerContextDocTools(server: McpServer, env: Env, userId: str
 		async ({ filename, content }) => {
 			try {
 				const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
-				await writeStaticFile(userId, safe, content, env);
-				return toolText(`Document '${safe}' saved (${content.length} chars).`);
+				const result = await writeStaticFile(userId, safe, content, env);
+				return toolText(
+					`Document '${safe}' saved via ${result.backend} (${content.length} chars).`,
+				);
 			} catch (error) {
 				return toolError(error);
 			}
@@ -57,7 +59,7 @@ export function registerContextDocTools(server: McpServer, env: Env, userId: str
 
 	server.tool(
 		"delete_context_doc",
-		"Delete a persistent context document.",
+		"Delete a persistent context document from R2 and/or KV.",
 		{ filename: z.string().describe("Document name to delete") },
 		async ({ filename }) => {
 			try {
@@ -71,7 +73,7 @@ export function registerContextDocTools(server: McpServer, env: Env, userId: str
 
 	server.tool(
 		"list_context_docs",
-		"List all persistent context documents for this user.",
+		"List all persistent context documents (union of R2 and KV keys).",
 		{},
 		async () => {
 			try {

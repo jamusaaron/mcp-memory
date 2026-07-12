@@ -129,6 +129,47 @@ const MIGRATIONS = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE INDEX IF NOT EXISTS idx_personality_user ON personality_feedback(userId)`,
+
+    `CREATE TABLE IF NOT EXISTS agent_tasks (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        status TEXT DEFAULT 'open',
+        priority REAL DEFAULT 0.5,
+        assigned_agent TEXT,
+        claimed_by TEXT,
+        result TEXT,
+        tags TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_agent_tasks_user ON agent_tasks(userId, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent ON agent_tasks(userId, assigned_agent)`,
+
+    `CREATE TABLE IF NOT EXISTS agent_presence (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        role TEXT DEFAULT 'general',
+        status TEXT DEFAULT 'online',
+        capabilities TEXT DEFAULT '[]',
+        last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+        meta TEXT DEFAULT '{}'
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_agent_presence_user ON agent_presence(userId, agent_id)`,
+
+    `CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        agent_role TEXT NOT NULL,
+        input TEXT NOT NULL,
+        output TEXT,
+        memory_ids TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs(userId, agent_role)`,
 ];
 
 /** Additive column migrations — safe to re-run (errors ignored if column exists). */

@@ -2,8 +2,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { version } from "../package.json";
 
+import { registerAgentOrchestratorTools } from "./tools/agent-orchestrator";
 import { registerAiAgentTools } from "./tools/ai-agents";
 import { registerBehavioralTools } from "./tools/behavioral";
+import { registerBlobTools } from "./tools/blobs";
 import { registerContextDocTools } from "./tools/context-docs";
 import { registerHealthTools } from "./tools/health";
 import { registerInfraTools } from "./tools/infra";
@@ -35,9 +37,11 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		registerUncertaintyTools(this.server, env, userId);
 		registerSessionTools(this.server, env, userId);
 		registerContextDocTools(this.server, env, userId);
+		registerBlobTools(this.server, env, userId);
 		registerBehavioralTools(this.server, env, userId);
 		registerIngestionTools(this.server, env, userId);
 		registerAiAgentTools(this.server, env, userId);
+		registerAgentOrchestratorTools(this.server, env, userId);
 		registerHealthTools(this.server, env, userId);
 		registerInfraTools(this.server, env);
 	}

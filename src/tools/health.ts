@@ -1,13 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CloudflareApi } from "../utils/cloudflare-api";
 import { getMemoryIndex, listPeople } from "../utils/db";
-import { listStaticFiles } from "../utils/static-context";
+import { listStaticFiles, storageStatus } from "../utils/static-context";
 import { toolError, toolText } from "../utils/tool-result";
 
 export function registerHealthTools(server: McpServer, env: Env, userId: string) {
 	server.tool(
 		"health_check",
-		"Run a comprehensive health check on all system components: D1 database, Vectorize index, KV cache, persistent context, and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
+		"Run a comprehensive health check on all system components: D1, Vectorize, KV, R2 (if bound), persistent context, and Workers AI.",
 		{},
 		async () => {
 			try {
@@ -49,6 +49,20 @@ export function registerHealthTools(server: McpServer, env: Env, userId: string)
 					checks["KV"] = "OK — reachable";
 				} catch (e) {
 					checks["KV"] = `FAIL — ${String(e)}`;
+				}
+
+				try {
+					const storage = await storageStatus(env);
+					checks["Storage preferred"] = storage.preferred;
+					if (storage.r2) {
+						const listed = await env.R2!.list({ limit: 1 });
+						checks["R2"] = `OK — bound (${listed.objects.length >= 0 ? "reachable" : "?"})`;
+					} else {
+						checks["R2"] =
+							"NOT BOUND — enable R2 in Cloudflare Dashboard, create mcp-memory-r2, uncomment wrangler r2_buckets, redeploy";
+					}
+				} catch (e) {
+					checks["R2"] = `FAIL — ${String(e)}`;
 				}
 
 				try {

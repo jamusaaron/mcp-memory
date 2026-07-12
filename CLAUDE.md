@@ -1,13 +1,13 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 110 tools and no R2 subscription dependency.
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 135 tools, multi-agent orchestration, and dual document storage (R2 when enabled, KV fallback).
 
 ## Stack
 
 - **Runtime**: Cloudflare Workers
 - **Framework**: Hono (HTTP routing) + Agents SDK (MCP protocol)
 - **Database**: Cloudflare D1 (structured records, profiles, sessions, transcripts)
-- **Cache and persistent context**: Cloudflare KV (living summary, personality profile, session state, context documents)
+- **Cache and persistent context**: Cloudflare KV (living summary, session state, hot context docs); R2 bucket `mcp-memory-r2` for documents and large blobs
 - **Vector Search**: Cloudflare Vectorize with `@cf/baai/bge-m3` embeddings (1024 dimensions, cosine similarity)
 - **AI**: Workers AI for embeddings, triage, extraction, summarization
 - **State**: Durable Objects (`MyMCP` class)
@@ -22,10 +22,13 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/tools/people.ts` — People/profile management
 - `src/tools/uncertainty.ts` — Uncertainty/clarification loop
 - `src/tools/session.ts` — Session lifecycle with rich briefs
-- `src/tools/context-docs.ts` — KV-backed persistent context documents
+- `src/tools/context-docs.ts` — Context documents (R2 preferred, KV fallback)
+- `src/tools/blobs.ts` — Large blob storage + storage_status + KV→R2 migrate
 - `src/tools/behavioral.ts` — Behavioral and personality modeling
 - `src/tools/ingestion.ts` — Ingestion pipeline (3 tools)
-- `src/tools/ai-agents.ts` — Cross-agent shared memory
+- `src/tools/ai-agents.ts` — Cross-agent shared notes
+- `src/tools/agent-orchestrator.ts` — Specialized AI agents, task board, handoffs, debate
+- `src/utils/agents.ts` — Agent context packing and role runners
 - `src/tools/health.ts` — System health and degraded-capability reporting
 - `src/tools/infra.ts` — Cloudflare infra passthrough (22 tools; optional credentials required)
 - `src/utils/db.ts` — D1 database operations (incl. fulltext, pins, access tracking)

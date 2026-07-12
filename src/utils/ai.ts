@@ -1,9 +1,44 @@
-export async function llmCall(prompt: string, env: Env): Promise<string> {
-    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+export const TEXT_GENERATION_MODEL = "@cf/zai-org/glm-4.7-flash";
+const TEXT_GENERATION_MODEL_ID = TEXT_GENERATION_MODEL as keyof AiModels;
+
+export async function llmCall(prompt: string, env: Env, maxTokens = 1024): Promise<string> {
+    const result = await env.AI.run(TEXT_GENERATION_MODEL_ID, {
         messages: [{ role: "user", content: prompt }],
-        max_tokens: 1024,
+        max_tokens: maxTokens,
     }) as { response?: string };
     return result.response ?? "";
+}
+
+export async function llmCallSystem(
+    system: string,
+    user: string,
+    env: Env,
+    maxTokens = 1536,
+): Promise<string> {
+    const result = await env.AI.run(TEXT_GENERATION_MODEL_ID, {
+        messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+        ],
+        max_tokens: maxTokens,
+    }) as { response?: string };
+    return result.response ?? "";
+}
+
+export function extractJsonObject<T extends Record<string, unknown>>(text: string): T | null {
+    try {
+        const match = text.match(/\{[\s\S]*\}/);
+        if (match) return JSON.parse(match[0]) as T;
+    } catch { /* fall through */ }
+    return null;
+}
+
+export function extractJsonArray<T>(text: string): T[] | null {
+    try {
+        const match = text.match(/\[[\s\S]*\]/);
+        if (match) return JSON.parse(match[0]) as T[];
+    } catch { /* fall through */ }
+    return null;
 }
 
 export async function triageText(text: string, env: Env): Promise<{

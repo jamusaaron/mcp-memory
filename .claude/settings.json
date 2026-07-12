@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://localhost:8787/claude-user/sse"
+        "https://mcp-memory.jamusaaron.workers.dev/fe542582-e9bc-4f88-8fd8-e49c5672d92a/sse"
       ]
     }
   }

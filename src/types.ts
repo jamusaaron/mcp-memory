@@ -143,3 +143,47 @@ export interface MemoryIndex {
     pending_embedding: number;
     suppressed: number;
 }
+
+export const AGENT_TASK_STATUSES = [
+    "open", "claimed", "done", "failed", "cancelled",
+] as const;
+export type AgentTaskStatus = typeof AGENT_TASK_STATUSES[number];
+
+export interface AgentTask {
+    id: string;
+    userId: string;
+    title: string;
+    description: string | null;
+    status: AgentTaskStatus;
+    priority: number;
+    assigned_agent: string | null;
+    claimed_by: string | null;
+    result: string | null;
+    tags: string[];
+    created_at: string;
+    updated_at: string;
+    completed_at: string | null;
+}
+
+export interface AgentPresence {
+    id: string;
+    userId: string;
+    agent_id: string;
+    role: string;
+    status: string;
+    capabilities: string[];
+    last_seen: string;
+    meta: Record<string, unknown>;
+}
+
+export const AGENT_ROLES = [
+    "memory",
+    "research",
+    "drafting",
+    "evidence",
+    "strategy",
+    "style",
+    "morning",
+    "general",
+] as const;
+export type AgentRole = typeof AGENT_ROLES[number];

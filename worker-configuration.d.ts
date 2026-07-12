@@ -4,6 +4,7 @@
 declare namespace Cloudflare {
 	interface Env {
 		KV: KVNamespace;
+		R2: R2Bucket;
 		MCP_OBJECT: DurableObjectNamespace<import("./src/index").MyMCP>;
 		DB: D1Database;
 		RATE_LIMITER: RateLimit;

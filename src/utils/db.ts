@@ -1,5 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import type {
+	AgentPresence,
+	AgentTask,
+	AgentTaskStatus,
 	AiNote,
 	BehavioralObservation,
 	Memory,
@@ -870,4 +873,214 @@ export async function deleteAiNote(
 	)
 		.bind(userId, agentId, key, namespace)
 		.run();
+}
+
+// ── Agent Tasks ──
+
+function rowToTask(row: Record<string, unknown>): AgentTask {
+	return {
+		...row,
+		tags: parseJsonField(row.tags, []),
+		priority: Number(row.priority ?? 0.5),
+	} as unknown as AgentTask;
+}
+
+export async function createAgentTask(
+	userId: string,
+	data: {
+		title: string;
+		description?: string;
+		priority?: number;
+		assigned_agent?: string;
+		tags?: string[];
+	},
+	env: Env,
+): Promise<AgentTask> {
+	const id = uuidv4();
+	const now = new Date().toISOString();
+	await env.DB.prepare(
+		`INSERT INTO agent_tasks (id,userId,title,description,status,priority,assigned_agent,tags,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+	)
+		.bind(
+			id,
+			userId,
+			data.title,
+			data.description ?? null,
+			"open",
+			data.priority ?? 0.5,
+			data.assigned_agent ?? null,
+			JSON.stringify(data.tags ?? []),
+			now,
+			now,
+		)
+		.run();
+	const row = await env.DB.prepare("SELECT * FROM agent_tasks WHERE id=?")
+		.bind(id)
+		.first();
+	return rowToTask(row as Record<string, unknown>);
+}
+
+export async function listAgentTasks(
+	userId: string,
+	env: Env,
+	filters?: { status?: string; agent?: string; limit?: number },
+): Promise<AgentTask[]> {
+	let sql = "SELECT * FROM agent_tasks WHERE userId=?";
+	const params: unknown[] = [userId];
+	if (filters?.status) {
+		sql += " AND status=?";
+		params.push(filters.status);
+	}
+	if (filters?.agent) {
+		sql += " AND (assigned_agent=? OR claimed_by=?)";
+		params.push(filters.agent, filters.agent);
+	}
+	sql += " ORDER BY priority DESC, created_at DESC LIMIT ?";
+	params.push(filters?.limit ?? 50);
+	const res = await env.DB.prepare(sql).bind(...params).all();
+	return (res.results as Record<string, unknown>[]).map(rowToTask);
+}
+
+export async function getAgentTask(
+	id: string,
+	userId: string,
+	env: Env,
+): Promise<AgentTask | null> {
+	const row = await env.DB.prepare("SELECT * FROM agent_tasks WHERE id=? AND userId=?")
+		.bind(id, userId)
+		.first();
+	return row ? rowToTask(row as Record<string, unknown>) : null;
+}
+
+export async function updateAgentTask(
+	id: string,
+	userId: string,
+	updates: Partial<{
+		status: AgentTaskStatus;
+		claimed_by: string | null;
+		assigned_agent: string | null;
+		result: string | null;
+		priority: number;
+		description: string;
+	}>,
+	env: Env,
+): Promise<void> {
+	const sets: string[] = [];
+	const vals: unknown[] = [];
+	for (const [k, v] of Object.entries(updates)) {
+		sets.push(`${k}=?`);
+		vals.push(v);
+	}
+	sets.push("updated_at=?");
+	vals.push(new Date().toISOString());
+	if (updates.status === "done" || updates.status === "failed") {
+		sets.push("completed_at=?");
+		vals.push(new Date().toISOString());
+	}
+	vals.push(id, userId);
+	await env.DB.prepare(
+		`UPDATE agent_tasks SET ${sets.join(",")} WHERE id=? AND userId=?`,
+	)
+		.bind(...vals)
+		.run();
+}
+
+// ── Agent Presence ──
+
+export async function upsertAgentPresence(
+	userId: string,
+	agentId: string,
+	data: { role?: string; status?: string; capabilities?: string[]; meta?: Record<string, unknown> },
+	env: Env,
+): Promise<string> {
+	const existing = await env.DB.prepare(
+		"SELECT id FROM agent_presence WHERE userId=? AND agent_id=?",
+	)
+		.bind(userId, agentId)
+		.first();
+	const now = new Date().toISOString();
+	if (existing) {
+		await env.DB.prepare(
+			`UPDATE agent_presence SET role=COALESCE(?,role), status=?, capabilities=COALESCE(?,capabilities),
+       meta=COALESCE(?,meta), last_seen=? WHERE id=?`,
+		)
+			.bind(
+				data.role ?? null,
+				data.status ?? "online",
+				data.capabilities ? JSON.stringify(data.capabilities) : null,
+				data.meta ? JSON.stringify(data.meta) : null,
+				now,
+				(existing as any).id,
+			)
+			.run();
+		return (existing as any).id;
+	}
+	const id = uuidv4();
+	await env.DB.prepare(
+		`INSERT INTO agent_presence (id,userId,agent_id,role,status,capabilities,last_seen,meta)
+     VALUES (?,?,?,?,?,?,?,?)`,
+	)
+		.bind(
+			id,
+			userId,
+			agentId,
+			data.role ?? "general",
+			data.status ?? "online",
+			JSON.stringify(data.capabilities ?? []),
+			now,
+			JSON.stringify(data.meta ?? {}),
+		)
+		.run();
+	return id;
+}
+
+export async function listAgentPresence(userId: string, env: Env): Promise<AgentPresence[]> {
+	const res = await env.DB.prepare(
+		"SELECT * FROM agent_presence WHERE userId=? ORDER BY last_seen DESC",
+	)
+		.bind(userId)
+		.all();
+	return (res.results as any[]).map((r) => ({
+		...r,
+		capabilities: parseJsonField(r.capabilities, []),
+		meta: parseJsonField(r.meta, {}),
+	}));
+}
+
+// ── Agent Runs ──
+
+export async function insertAgentRun(
+	userId: string,
+	agentRole: string,
+	input: string,
+	output: string,
+	memoryIds: string[],
+	env: Env,
+): Promise<string> {
+	const id = uuidv4();
+	await env.DB.prepare(
+		`INSERT INTO agent_runs (id,userId,agent_role,input,output,memory_ids) VALUES (?,?,?,?,?,?)`,
+	)
+		.bind(id, userId, agentRole, input, output, JSON.stringify(memoryIds))
+		.run();
+	return id;
+}
+
+export async function listAgentRuns(
+	userId: string,
+	env: Env,
+	role?: string,
+	limit = 20,
+): Promise<Array<{ id: string; agent_role: string; input: string; output: string; created_at: string }>> {
+	let sql = "SELECT id, agent_role, input, output, created_at FROM agent_runs WHERE userId=?";
+	const params: unknown[] = [userId];
+	if (role) {
+		sql += " AND agent_role=?";
+		params.push(role);
+	}
+	sql += " ORDER BY created_at DESC LIMIT ?";
+	params.push(limit);
+	const res = await env.DB.prepare(sql).bind(...params).all();
+	return res.results as any[];
 }

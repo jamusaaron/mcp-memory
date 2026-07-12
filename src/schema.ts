@@ -129,6 +129,16 @@ const MIGRATIONS = [
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE INDEX IF NOT EXISTS idx_personality_user ON personality_feedback(userId)`,
+    `CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        role TEXT NOT NULL,
+        input TEXT NOT NULL,
+        output TEXT NOT NULL,
+        memory_ids TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_agent_runs_user ON agent_runs(userId)`,
 ];
 
 /** Additive column migrations — safe to re-run (errors ignored if column exists). */

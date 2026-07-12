@@ -143,3 +143,18 @@ export interface MemoryIndex {
     pending_embedding: number;
     suppressed: number;
 }
+
+export const AGENT_ROLES = ["prompt"] as const;
+export type AgentRole = typeof AGENT_ROLES[number];
+
+export interface AgentRun {
+	id: string;
+	userId: string;
+	role: string;
+	input: string;
+	output: string;
+	memory_ids: string[];
+	created_at: string;
+}
+
+

@@ -12,6 +12,7 @@ const activeFiles = [
 	"src/tools/ai-agents.ts",
 	"src/tools/health.ts",
 	"src/tools/infra.ts",
+	"src/tools/prompt-engineering.ts",
 ];
 const forbidden = new Set([
 	"read_static_file",
@@ -23,7 +24,7 @@ const forbidden = new Set([
 	"r2_bucket_delete",
 	"r2_buckets_list",
 ]);
-const EXPECTED_TOOLS = 110;
+const EXPECTED_TOOLS = 113;
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );

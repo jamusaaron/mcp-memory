@@ -161,3 +161,32 @@ Focus on meaningful, persistent information. Skip transient details.`;
     } catch { /* fall through */ }
     return [];
 }
+
+export function extractJsonObject<T>(text: string): T | null {
+    try {
+        const startIdx = text.indexOf('{');
+        if (startIdx !== -1) {
+            const substring = text.substring(startIdx);
+            const match = substring.match(/^\{[\s\S]*?\}/);
+            return JSON.parse(substring) as T;
+        }
+    } catch {}
+    try {
+        const match = text.match(/\{[\s\S]*?\}/);
+        if (match) return JSON.parse(match[0]) as T;
+    } catch {}
+    return null;
+}
+
+export async function llmCallSystem(system: string, user: string, env: Env, maxTokens = 2200): Promise<string> {
+    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+        messages: [
+            { role: "system", content: system },
+            { role: "user", content: user }
+        ],
+        max_tokens: maxTokens,
+    }) as { response?: string };
+    return result.response ?? "";
+}
+
+

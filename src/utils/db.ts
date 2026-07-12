@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from "uuid";
 import type {
+	AgentRun,
 	AiNote,
 	BehavioralObservation,
 	Memory,
@@ -871,3 +872,21 @@ export async function deleteAiNote(
 		.bind(userId, agentId, key, namespace)
 		.run();
 }
+
+export async function insertAgentRun(
+	userId: string,
+	role: string,
+	input: string,
+	output: string,
+	memoryIds: string[],
+	env: Env,
+): Promise<string> {
+	const id = uuidv4();
+	await env.DB.prepare(
+		"INSERT INTO agent_runs (id,userId,role,input,output,memory_ids) VALUES (?,?,?,?,?,?)",
+	)
+		.bind(id, userId, role, input, output, JSON.stringify(memoryIds || []))
+		.run();
+	return id;
+}
+

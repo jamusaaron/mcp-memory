@@ -12,6 +12,7 @@ import { registerMemoryTools } from "./tools/memory";
 import { registerPeopleTools } from "./tools/people";
 import { registerSessionTools } from "./tools/session";
 import { registerUncertaintyTools } from "./tools/uncertainty";
+import { registerPromptEngineeringTools } from "./tools/prompt-engineering";
 
 type MyMCPProps = {
 	userId: string;
@@ -40,5 +41,6 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		registerAiAgentTools(this.server, env, userId);
 		registerHealthTools(this.server, env, userId);
 		registerInfraTools(this.server, env);
+		registerPromptEngineeringTools(this.server, env, userId);
 	}
 }

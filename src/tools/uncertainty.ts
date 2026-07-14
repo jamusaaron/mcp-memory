@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { insertUncertainty, listUncertainties, answerUncertainty, dismissUncertainty } from "../utils/db";
+import { insertUncertainty, listUncertainties, answerUncertainty, dismissUncertainty, getUncertaintyById } from "../utils/db";
+import { onUncertaintyResolved } from "../utils/cross-talk";
 
 export function registerUncertaintyTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -29,8 +30,13 @@ export function registerUncertaintyTools(server: McpServer, env: Env, userId: st
         },
         async ({ uncertainty_id, answer }) => {
             try {
+                const uncertainty = await getUncertaintyById(uncertainty_id, userId, env);
                 await answerUncertainty(uncertainty_id, userId, answer, env);
-                return { content: [{ type: "text", text: `Answer recorded for uncertainty ${uncertainty_id}.` }] };
+                // Auto-create a memory from the resolved question + answer
+                if (uncertainty) {
+                    onUncertaintyResolved(userId, uncertainty.question, answer, env).catch(() => {});
+                }
+                return { content: [{ type: "text", text: `Answer recorded for uncertainty ${uncertainty_id}. A memory has been created from this answer.` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to record answer: " + String(error) }] };
             }

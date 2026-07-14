@@ -3,6 +3,7 @@ import { z } from "zod";
 import { insertTranscript, listTranscripts, markTranscriptProcessed, insertMemory } from "../utils/db";
 import { storeMemoryVector, searchMemories } from "../utils/vectorize";
 import { extractFromTranscript, triageText } from "../utils/ai";
+import { onIngestion, onMemoryWrite } from "../utils/cross-talk";
 
 export function registerIngestionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -55,6 +56,7 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
                 if (proposed.length > 0) response += `\n\nProposed memories (not yet stored):\n${proposed.join("\n")}`;
                 response += "\n\nUse write_memory to store proposed items individually.";
 
+                onIngestion(userId, transcriptId, extracted.length, env).catch(() => {});
                 return { content: [{ type: "text", text: response }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to ingest transcript: " + String(error) }] };
@@ -122,6 +124,7 @@ export function registerIngestionTools(server: McpServer, env: Env, userId: stri
                     await env.DB.prepare("UPDATE memories SET embedding_status='embedded' WHERE id=?").bind(memory.id).run();
                 } catch { /* best effort */ }
 
+                onMemoryWrite(userId, memory.id, text, triage.category, "write", env).catch(() => {});
                 return { content: [{ type: "text", text: `Stored as memory [${memory.id}]: category=${triage.category}, layer=${triage.layer}, confidence=${triage.confidence}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to process inbound: " + String(error) }] };

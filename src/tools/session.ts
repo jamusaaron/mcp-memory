@@ -5,6 +5,7 @@ import { insertSessionLog, getSessionLogs, getRecentSessions, queryMemories, get
 import { getLivingSummary, putLivingSummary, putSessionState, getSessionState } from "../utils/kv";
 import { writeStaticFile, readStaticFile } from "../utils/static-context";
 import { generateSummary } from "../utils/ai";
+import { getCrossDomainContext, onSessionClose } from "../utils/cross-talk";
 
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -16,7 +17,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                 const sid = session_id ?? uuidv4();
                 await putSessionState(userId, sid, JSON.stringify({ started: new Date().toISOString() }), env);
 
-                const [summary, recentSessions, index, contextCurrent, selfProfile, pinned, openQs, reverify] =
+                const [summary, recentSessions, index, contextCurrent, selfProfile, pinned, openQs, reverify, crossDomain] =
                     await Promise.all([
                         getLivingSummary(userId, env),
                         getRecentSessions(userId, env, 3),
@@ -26,6 +27,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                         getPinnedMemories(userId, env, 10),
                         listUncertainties(userId, env, "open"),
                         getMemoriesNeedingReverification(userId, env, 30),
+                        getCrossDomainContext(userId, env),
                     ]);
 
                 let brief = `# Session Brief (${sid})\n\n`;
@@ -44,6 +46,26 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                     brief += `## Current Context\n${contextCurrent}\n\n`;
                 }
 
+                if (crossDomain.behavioralSummary) {
+                    brief += `## Behavioral & Personality Context\n${crossDomain.behavioralSummary.slice(0, 800)}\n\n`;
+                }
+
+                if (crossDomain.recentObservations.length > 0) {
+                    brief += `## Recent Behavioral Observations\n`;
+                    for (const obs of crossDomain.recentObservations) {
+                        brief += `- [${obs.observation_type}] ${obs.content}\n`;
+                    }
+                    brief += "\n";
+                }
+
+                if (crossDomain.recentAgentNotes.length > 0) {
+                    brief += `## Recent Agent Handoff Notes\n`;
+                    for (const note of crossDomain.recentAgentNotes) {
+                        brief += `- [${note.agent_id}] ${note.key}: ${note.content.slice(0, 120)}\n`;
+                    }
+                    brief += "\n";
+                }
+
                 if (pinned.length > 0) {
                     brief += `## Pinned Memories\n`;
                     for (const p of pinned) {
@@ -52,12 +74,13 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                     brief += "\n";
                 }
 
-                if (openQs.length > 0) {
-                    brief += `## Open Uncertainties (${openQs.length})\n`;
+                if (openQs.length > 0 || crossDomain.openUncertainties > 0) {
+                    const total = Math.max(openQs.length, crossDomain.openUncertainties);
+                    brief += `## Open Uncertainties (${total})\n`;
                     for (const u of openQs.slice(0, 8)) {
                         brief += `- [${u.id}] ${u.question}\n`;
                     }
-                    if (openQs.length > 8) brief += `- …and ${openQs.length - 8} more\n`;
+                    if (total > 8) brief += `- …and ${total - 8} more\n`;
                     brief += "\n";
                 }
 
@@ -137,6 +160,9 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                 if (carry_forward) {
                     await writeStaticFile(userId, "context_current", carry_forward, env);
                 }
+
+                // Propagate session close: invalidate living summary + record behavioral observation
+                onSessionClose(userId, session_id, summary, env).catch(() => {});
 
                 return { content: [{ type: "text", text: `Session ${session_id} closed.` }] };
             } catch (error) {

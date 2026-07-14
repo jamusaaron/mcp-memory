@@ -28,6 +28,7 @@ import {
 	searchMemories,
 	storeMemoryVector,
 } from "../utils/vectorize";
+import { onMemoryWrite, onMemoryBatch } from "../utils/cross-talk";
 
 async function embedMemory(
 	memory: { id: string; text: string; category?: string; layer?: string; salience?: number; pinned?: boolean },
@@ -154,6 +155,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 				}
 				response += embeddingWarning;
 
+				onMemoryWrite(userId, memory.id, params.text, params.category ?? "knowledge", "write", env).catch(() => {});
 				return toolText(response);
 			} catch (error) {
 				return toolError(error);
@@ -204,6 +206,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 				} else {
 					await updateMemory(id, userId, updates as any, env);
 				}
+				onMemoryWrite(userId, id, updates.text ?? id, updates.category ?? "knowledge", "edit", env).catch(() => {});
 				return toolText(`Memory ${id} updated.`);
 			} catch (error) {
 				return toolError(error);
@@ -229,6 +232,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 				} catch {
 					/* best effort */
 				}
+				onMemoryWrite(userId, id, id, "knowledge", "forget", env).catch(() => {});
 				return toolText(`Memory ${id} forgotten.${reason ? ` Reason: ${reason}` : ""}`);
 			} catch (error) {
 				return toolError(error);
@@ -254,6 +258,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					{ suppressed: true, suppression_reason: reason } as any,
 					env,
 				);
+				onMemoryWrite(userId, id, memory.text, memory.category, "suppress", env).catch(() => {});
 				return { content: [{ type: "text", text: `Memory ${id} suppressed: ${reason}` }] };
 			} catch (error) {
 				return {
@@ -284,6 +289,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					{ suppressed: false, suppression_reason: null } as any,
 					env,
 				);
+				onMemoryWrite(userId, id, memory.text, memory.category, "restore", env).catch(() => {});
 				return {
 					content: [
 						{
@@ -1193,6 +1199,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					}
 				}
 
+				onMemoryBatch(userId, consolidated, "consolidation", env).catch(() => {});
 				return {
 					content: [
 						{
@@ -1364,6 +1371,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					console.error("remember embed failed:", e);
 				}
 
+				onMemoryBatch(userId, 1, "batch_write", env).catch(() => {});
 				return toolText(
 					`Remembered [${memory.id}] as ${triage.category}/${triage.layer} (conf ${triage.confidence}, sal ${triage.salience}): ${text}`,
 				);
@@ -1622,6 +1630,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					stored++;
 					results.push(`ok [${memory.id}] ${item.text.slice(0, 60)}`);
 				}
+				onMemoryBatch(userId, stored, "batch_write", env).catch(() => {});
 				return toolText(
 					`Batch write: ${stored} stored, ${skipped} skipped.\n${results.join("\n")}`,
 				);
@@ -1752,6 +1761,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					}
 				}
 
+				onMemoryBatch(userId, imported + updated, "import", env).catch(() => {});
 				return toolText(
 					`Import complete: ${imported} new, ${updated} updated, ${skipped} skipped, ${failed} failed (of ${items.length}, max 200 processed).`,
 				);

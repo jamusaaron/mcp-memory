@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { listAiAgents, listAiNotes, getAiNote, upsertAiNote, deleteAiNote } from "../utils/db";
+import { onAgentNoteWrite } from "../utils/cross-talk";
 
 export function registerAiAgentTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -73,6 +74,7 @@ export function registerAiAgentTools(server: McpServer, env: Env, userId: string
         async ({ agent_id, key, content, namespace }) => {
             try {
                 const id = await upsertAiNote(userId, agent_id, key, content, env, namespace);
+                onAgentNoteWrite(userId, agent_id, key, env).catch(() => {});
                 return { content: [{ type: "text", text: `Note saved: ${agent_id}/${key} [${id}]` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to write note: " + String(error) }] };

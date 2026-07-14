@@ -459,6 +459,17 @@ export async function answerUncertainty(
 		.run();
 }
 
+export async function getUncertaintyById(
+	id: string,
+	userId: string,
+	env: Env,
+): Promise<Uncertainty | null> {
+	const row = await env.DB.prepare("SELECT * FROM uncertainties WHERE id=? AND userId=?")
+		.bind(id, userId)
+		.first();
+	return row ? (row as unknown as Uncertainty) : null;
+}
+
 // ── AI Notes ──
 
 export async function upsertAiNote(

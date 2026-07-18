@@ -448,7 +448,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 
     server.tool(
         "connection_map",
-        "Visualize connections between a memory (by ID or search query) and related memories/people. Shows a network of semantically related memories to understand how topics interconnect.",
+        "Visualize connections between a memory (by ID or search query) and related memories/people. Shows a network of semantically related memories to understand how topics interconnect. Falls back to keyword search automatically if the vector index is unavailable.",
         {
             query: z.string().describe("Memory ID or natural language search query"),
             depth: z.number().optional().default(2).describe("How many levels of connections to follow (each level fetches 5 related memories)"),
@@ -461,12 +461,13 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                     searchQuery = rootMemory.text;
                 }
 
-                const related = await searchMemories(searchQuery, userId, env, depth * 5);
+                const { results: related, mode } = await searchMemoriesWithFallback(searchQuery, userId, env, depth * 5);
                 if (related.length === 0) {
                     return { content: [{ type: "text", text: "No connections found." }] };
                 }
 
-                let text = `Connection map for "${searchQuery.slice(0, 50)}...":\n`;
+                const modeNote = mode === "keyword" ? " (keyword fallback — vector index unavailable)" : "";
+                let text = `Connection map for "${searchQuery.slice(0, 50)}..."${modeNote}:\n`;
                 for (const r of related) {
                     const mem = await getMemoryById(r.id, userId, env);
                     const tags = mem ? ` [${mem.tags.join(", ")}]` : "";

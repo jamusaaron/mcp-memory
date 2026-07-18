@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertPerson, listPeople, getPerson, getPersonProfiles, upsertPersonProfile, insertPendingUpdate, listPendingUpdates, setPendingUpdateStatus, queryMemories, searchPeopleByName, deletePerson, updatePerson } from "../utils/db";
 import { extractProfileUpdates, generateSummary } from "../utils/ai";
-import { writeStaticFile } from "../utils/r2";
+import { rebuildSelfProfileNow } from "../utils/cascade";
 import { PROFILE_SECTIONS } from "../types";
 
 export function registerPeopleTools(server: McpServer, env: Env, userId: string) {
@@ -372,22 +372,11 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
         {},
         async () => {
             try {
-                const memories = await queryMemories(userId, env, { limit: 200, suppressed: false });
-                const identityMemories = memories.filter(m =>
-                    ["identity", "preferences", "likes", "goals", "rules"].includes(m.category)
-                );
-
-                if (identityMemories.length === 0) {
+                const summary = await rebuildSelfProfileNow(userId, env);
+                if (!summary) {
                     return { content: [{ type: "text", text: "No identity-related memories found to build self-profile." }] };
                 }
-
-                const summary = await generateSummary(identityMemories.map(m => ({
-                    text: m.text, category: m.category,
-                })), env);
-
-                await writeStaticFile(userId, "self_profile", summary, env);
-
-                return { content: [{ type: "text", text: `Self-profile rebuilt from ${identityMemories.length} memories and saved.` }] };
+                return { content: [{ type: "text", text: `Self-profile rebuilt and saved:\n\n${summary}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to rebuild self-profile: " + String(error) }] };
             }

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getUnembeddedMemories, getSuppressedMemories, runDecaySweep } from "../utils/db";
 import { storeMemoryVector, searchMemories, searchMemoriesWithFallback, deleteVectorById } from "../utils/vectorize";
 import { triageText, detectContradictions, analyzePatterns, generateSummary } from "../utils/ai";
-import { putLivingSummary } from "../utils/kv";
+import { markMemoriesWritten, autoRebuildIfDirty } from "../utils/cascade";
 import { CATEGORIES, LAYERS, SOURCE_TYPES } from "../types";
 
 export function registerMemoryTools(server: McpServer, env: Env, userId: string) {
@@ -51,6 +51,9 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                     console.error("Embedding failed:", e);
                 }
 
+                await markMemoriesWritten(userId, env, [memory.category]);
+                await autoRebuildIfDirty(userId, env);
+
                 let response = `Memory stored [${memory.id}]: ${params.text}`;
                 if (contradictions.length > 0) {
                     response += `\n\nContradictions detected and handled:\n${contradictions.map(c => `- ${c.explanation} (${c.contradiction_type})`).join("\n")}`;
@@ -80,6 +83,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async ({ memories }) => {
             const stored: string[] = [];
+            const storedCategories: string[] = [];
             const failed: string[] = [];
             let embedded = 0;
 
@@ -87,6 +91,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 try {
                     const memory = await insertMemory({ userId, ...m }, env);
                     stored.push(memory.id);
+                    storedCategories.push(memory.category);
                     try {
                         await storeMemoryVector(memory.id, m.text, userId, env);
                         await updateMemory(memory.id, userId, { embedding_status: "embedded" } as any, env);
@@ -95,6 +100,11 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 } catch (e) {
                     failed.push(`"${m.text.slice(0, 60)}": ${String(e)}`);
                 }
+            }
+
+            if (storedCategories.length > 0) {
+                await markMemoriesWritten(userId, env, storedCategories);
+                await autoRebuildIfDirty(userId, env);
             }
 
             let response = `Batch complete: ${stored.length}/${memories.length} stored, ${embedded} embedded.`;
@@ -127,6 +137,11 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 await updateMemory(id, userId, updates as any, env);
                 if (updates.text) {
                     await storeMemoryVector(id, updates.text, userId, env);
+                    const updated = await getMemoryById(id, userId, env);
+                    if (updated) {
+                        await markMemoriesWritten(userId, env, [updated.category]);
+                        await autoRebuildIfDirty(userId, env);
+                    }
                 }
                 return { content: [{ type: "text", text: `Memory ${id} updated.` }] };
             } catch (error) {
@@ -144,8 +159,13 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async ({ id, reason }) => {
             try {
+                const existing = await getMemoryById(id, userId, env);
                 await deleteMemory(id, userId, env);
                 try { await deleteVectorById(id, env); } catch { /* best effort */ }
+                if (existing) {
+                    await markMemoriesWritten(userId, env, [existing.category]);
+                    await autoRebuildIfDirty(userId, env);
+                }
                 return { content: [{ type: "text", text: `Memory ${id} forgotten.${reason ? ` Reason: ${reason}` : ""}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to forget memory: " + String(error) }] };
@@ -165,6 +185,8 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 const memory = await getMemoryById(id, userId, env);
                 if (!memory) return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
                 await updateMemory(id, userId, { suppressed: true, suppression_reason: reason } as any, env);
+                await markMemoriesWritten(userId, env, [memory.category]);
+                await autoRebuildIfDirty(userId, env);
                 return { content: [{ type: "text", text: `Memory ${id} suppressed: ${reason}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to suppress memory: " + String(error) }] };
@@ -184,6 +206,8 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
                 if (!memory) return { content: [{ type: "text", text: `Memory ${id} not found.` }] };
                 if (!memory.suppressed) return { content: [{ type: "text", text: `Memory ${id} is not suppressed.` }] };
                 await updateMemory(id, userId, { suppressed: false, suppression_reason: null } as any, env);
+                await markMemoriesWritten(userId, env, [memory.category]);
+                await autoRebuildIfDirty(userId, env);
                 return { content: [{ type: "text", text: `Memory ${id} restored (was suppressed: ${memory.suppression_reason}).` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to restore memory: " + String(error) }] };

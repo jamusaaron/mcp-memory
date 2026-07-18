@@ -1,10 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { insertSessionLog, getSessionLogs, getRecentSessions, queryMemories, getMemoryIndex, getWriteActivity } from "../utils/db";
-import { getLivingSummary, putLivingSummary, putSessionState, getSessionState } from "../utils/kv";
+import { insertSessionLog, getSessionLogs, getRecentSessions, getMemoryIndex, getWriteActivity } from "../utils/db";
+import { getLivingSummary, putSessionState, getSessionState } from "../utils/kv";
 import { writeStaticFile, readStaticFile } from "../utils/r2";
-import { generateSummary } from "../utils/ai";
+import { rebuildDirtyOnSessionClose, getStaleness, rebuildLivingSummaryNow } from "../utils/cascade";
 
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -20,12 +20,18 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                 const recentSessions = await getRecentSessions(userId, env, 3);
                 const index = await getMemoryIndex(userId, env);
                 const contextCurrent = await readStaticFile(userId, "context_current", env);
+                const staleness = await getStaleness(userId, env);
 
                 let brief = `# Session Brief (${sid})\n\n`;
                 brief += `## Memory Store\n${index.total} memories across ${Object.keys(index.by_category).length} categories\n\n`;
 
                 if (summary) {
                     brief += `## Living Summary\n${summary}\n\n`;
+                    if (staleness.livingSummaryDirty > 0) {
+                        brief += `_(${staleness.livingSummaryDirty} memory change${staleness.livingSummaryDirty === 1 ? "" : "s"} since this was last built — will auto-refresh at session close, or run rebuild_living_summary now.)_\n\n`;
+                    }
+                } else if (staleness.livingSummaryDirty > 0) {
+                    brief += `## Living Summary\nNot yet built. Run rebuild_living_summary to generate one.\n\n`;
                 }
 
                 if (contextCurrent) {
@@ -84,7 +90,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
     server.tool(
         "session_close",
-        "Close the current session with a summary and optional carry-forward items. The carry-forward content is saved to the current context file so it's available in the next session's brief. Call this at the end of conversations.",
+        "Close the current session with a summary and optional carry-forward items. The carry-forward content is saved to the current context file so it's available in the next session's brief. If any memories were written, edited, suppressed, or forgotten during the session, the living summary and self-profile are automatically refreshed from the current memory store. Call this at the end of conversations.",
         {
             session_id: z.string().describe("Session ID"),
             summary: z.string().describe("What happened in this session"),
@@ -101,7 +107,12 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                     await writeStaticFile(userId, "context_current", carry_forward, env);
                 }
 
-                return { content: [{ type: "text", text: `Session ${session_id} closed.` }] };
+                const rebuilt = await rebuildDirtyOnSessionClose(userId, env);
+                let response = `Session ${session_id} closed.`;
+                if (rebuilt.livingSummary) response += " Living summary refreshed.";
+                if (rebuilt.selfProfile) response += " Self-profile refreshed.";
+
+                return { content: [{ type: "text", text: response }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to close session: " + String(error) }] };
             }
@@ -185,18 +196,11 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
         {},
         async () => {
             try {
-                const memories = await queryMemories(userId, env, { limit: 200, suppressed: false });
-                if (memories.length === 0) {
+                const summary = await rebuildLivingSummaryNow(userId, env);
+                if (!summary) {
                     return { content: [{ type: "text", text: "No memories to summarize." }] };
                 }
-
-                const summary = await generateSummary(memories.map(m => ({
-                    text: m.text, category: m.category,
-                })), env);
-
-                await putLivingSummary(userId, summary, env);
-
-                return { content: [{ type: "text", text: `Living summary rebuilt from ${memories.length} memories:\n\n${summary}` }] };
+                return { content: [{ type: "text", text: `Living summary rebuilt:\n\n${summary}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to rebuild summary: " + String(error) }] };
             }

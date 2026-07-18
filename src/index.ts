@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { MyMCP } from "./mcp";
 import { initializeDatabase } from "./schema";
-import { queryMemories, deleteMemory, updateMemory, getMemoryById, insertMemory } from "./utils/db";
+import { queryMemories, deleteMemory, updateMemory, getMemoryById, insertMemory, listDistinctUserIds, runDecaySweep } from "./utils/db";
 import { deleteVectorById, storeMemoryVector } from "./utils/vectorize";
 
 const app = new Hono<{
@@ -138,6 +138,43 @@ app.mount("/", async (req, env, ctx) => {
     return new Response("Not Found within MCP mount", { status: 404 });
 });
 
-export default app;
+async function runScheduledDecaySweep(env: Env): Promise<void> {
+    if (!dbInitialized) {
+        try {
+            await initializeDatabase(env);
+            dbInitialized = true;
+        } catch (e) {
+            console.error("Scheduled sweep: failed to initialize database:", e);
+            return;
+        }
+    }
+
+    try {
+        const userIds = await listDistinctUserIds(env);
+        let totalDecayed = 0;
+        let totalFlagged = 0;
+
+        for (const userId of userIds) {
+            try {
+                const { decayed, flagged } = await runDecaySweep(userId, env);
+                totalDecayed += decayed;
+                totalFlagged += flagged;
+            } catch (e) {
+                console.error(`Scheduled sweep: decay failed for user ${userId}:`, e);
+            }
+        }
+
+        console.log(`Scheduled decay sweep: ${userIds.length} users, ${totalDecayed} memories decayed, ${totalFlagged} flagged for reverification.`);
+    } catch (e) {
+        console.error("Scheduled decay sweep failed:", e);
+    }
+}
+
+export default {
+    fetch: app.fetch,
+    async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
+        ctx.waitUntil(runScheduledDecaySweep(env));
+    },
+};
 
 export { MyMCP };

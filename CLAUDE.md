@@ -70,3 +70,7 @@ Auth is optional and off by default. To require an API key on all data routes, s
 ## Resilience
 
 Semantic search, AI triage, and contradiction detection require Workers AI + Vectorize (remote resources). When those are unreachable (e.g. local dev without Cloudflare auth), search tools fall back to D1 keyword search, triage stores with default categorization, and writes skip the contradiction check — core functionality keeps working.
+
+## Scheduled Maintenance
+
+`wrangler.jsonc` defines a cron trigger (`triggers.crons`) that fires `scheduled()` in `src/index.ts`. It runs a decay sweep (`runDecaySweep` in `src/utils/db.ts`) across every user with stored memories — enumerated via `listDistinctUserIds` — same logic as the `run_decay_sweep` MCP tool, just applied account-wide instead of to one caller's `userId`. Test locally with `wrangler dev --test-scheduled` and `curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"`.

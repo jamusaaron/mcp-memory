@@ -119,6 +119,35 @@ export async function getMemoriesNeedingReverification(userId: string, env: Env,
     return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }
 
+export async function listDistinctUserIds(env: Env): Promise<string[]> {
+    const res = await env.DB.prepare("SELECT DISTINCT userId FROM memories").all();
+    return (res.results as Array<{ userId: string }>).map(r => r.userId);
+}
+
+export async function runDecaySweep(userId: string, env: Env, decayRate: number = 0.02, minConfidence: number = 0.3): Promise<{ decayed: number; flagged: number }> {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
+    const memories = await queryMemories(userId, env, { suppressed: false, limit: 500 });
+    let decayed = 0;
+    let flagged = 0;
+
+    for (const m of memories) {
+        if (m.layer === "core") continue;
+        if (m.last_verified && m.last_verified > thirtyDaysAgo) continue;
+
+        const daysSinceCreated = (Date.now() - new Date(m.created_at).getTime()) / 86400000;
+        if (daysSinceCreated < 30) continue;
+
+        const newConfidence = Math.max(minConfidence, m.confidence - decayRate);
+        if (newConfidence !== m.confidence) {
+            await updateMemory(m.id, userId, { confidence: newConfidence } as any, env);
+            decayed++;
+            if (newConfidence <= minConfidence + 0.1) flagged++;
+        }
+    }
+
+    return { decayed, flagged };
+}
+
 export async function getUnembeddedMemories(userId: string, env: Env): Promise<Memory[]> {
     const res = await env.DB.prepare(
         "SELECT * FROM memories WHERE userId=? AND embedding_status='pending' LIMIT 100"

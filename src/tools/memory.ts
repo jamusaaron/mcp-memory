@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getUnembeddedMemories, getSuppressedMemories } from "../utils/db";
+import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getUnembeddedMemories, getSuppressedMemories, runDecaySweep } from "../utils/db";
 import { storeMemoryVector, searchMemories, searchMemoriesWithFallback, deleteVectorById } from "../utils/vectorize";
 import { triageText, detectContradictions, analyzePatterns, generateSummary } from "../utils/ai";
 import { putLivingSummary } from "../utils/kv";
@@ -791,26 +791,7 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         },
         async ({ decay_rate, min_confidence }) => {
             try {
-                const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString();
-                const memories = await queryMemories(userId, env, { suppressed: false, limit: 500 });
-                let decayed = 0;
-                let flagged = 0;
-
-                for (const m of memories) {
-                    if (m.layer === "core") continue;
-                    if (m.last_verified && m.last_verified > thirtyDaysAgo) continue;
-
-                    const daysSinceCreated = (Date.now() - new Date(m.created_at).getTime()) / 86400000;
-                    if (daysSinceCreated < 30) continue;
-
-                    const newConfidence = Math.max(min_confidence, m.confidence - decay_rate);
-                    if (newConfidence !== m.confidence) {
-                        await updateMemory(m.id, userId, { confidence: newConfidence } as any, env);
-                        decayed++;
-                        if (newConfidence <= min_confidence + 0.1) flagged++;
-                    }
-                }
-
+                const { decayed, flagged } = await runDecaySweep(userId, env, decay_rate, min_confidence);
                 return { content: [{ type: "text", text: `Decay sweep: ${decayed} memories decayed, ${flagged} flagged for reverification.` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to run decay sweep: " + String(error) }] };

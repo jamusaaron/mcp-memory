@@ -1,9 +1,39 @@
+// Ordered list of Workers AI text-generation models to try. The first that
+// succeeds is used; if a model has been deprecated or removed (Cloudflare
+// retires models on an end-of-support schedule — e.g. the Llama 3.x 8B
+// instruct line hit EOL 2026-05-30), we fall through to the next. Set the
+// LLM_MODEL var in wrangler.jsonc to pin/override the primary without a code
+// change. All entries post-date the retired 3.1-8b line and span sizes so a
+// single deprecation can't take out the whole list.
+const FALLBACK_TEXT_MODELS = [
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "@cf/meta/llama-4-scout-17b-16e-instruct",
+    "@cf/meta/llama-3.1-8b-instruct-fast",
+    "@cf/meta/llama-3.2-3b-instruct",
+];
+
 export async function llmCall(prompt: string, env: Env): Promise<string> {
-    const result = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 1024,
-    }) as { response?: string };
-    return result.response ?? "";
+    const configured = (env as Env & { LLM_MODEL?: string }).LLM_MODEL;
+    const models = configured
+        ? [configured, ...FALLBACK_TEXT_MODELS.filter(m => m !== configured)]
+        : FALLBACK_TEXT_MODELS;
+
+    let lastError: unknown;
+    for (const model of models) {
+        try {
+            // Cast: the model list is intentionally dynamic (future-proof against
+            // deprecations), so we bypass the generated fixed model-name union.
+            const result = await (env.AI.run as (m: string, o: unknown) => Promise<{ response?: string }>)(model, {
+                messages: [{ role: "user", content: prompt }],
+                max_tokens: 1024,
+            });
+            return result.response ?? "";
+        } catch (e) {
+            lastError = e;
+            console.error(`llmCall: model ${model} unavailable, trying next:`, String(e));
+        }
+    }
+    throw lastError ?? new Error("llmCall: no text-generation model available");
 }
 
 export async function triageText(text: string, env: Env): Promise<{

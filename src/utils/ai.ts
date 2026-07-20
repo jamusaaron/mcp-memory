@@ -3,16 +3,24 @@
 // retires models on an end-of-support schedule — e.g. the Llama 3.x 8B
 // instruct line hit EOL 2026-05-30), we fall through to the next. Set the
 // LLM_MODEL var in wrangler.jsonc to pin/override the primary without a code
-// change. All entries post-date the retired 3.1-8b line and span sizes so a
-// single deprecation can't take out the whole list.
+// change. Entries span model families and sizes so a single deprecation — or
+// even a whole-family issue — can't take out the entire list.
 const FALLBACK_TEXT_MODELS = [
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "@cf/meta/llama-4-scout-17b-16e-instruct",
     "@cf/meta/llama-3.1-8b-instruct-fast",
     "@cf/meta/llama-3.2-3b-instruct",
+    "@cf/mistralai/mistral-small-3.1-24b-instruct",
+    "@cf/qwen/qwen2.5-coder-32b-instruct",
 ];
 
-export async function llmCall(prompt: string, env: Env): Promise<string> {
+/**
+ * Run a text-generation prompt, trying each candidate model until one works.
+ * Returns the response AND the model that produced it (so callers like
+ * health_check can report which model is live). Throws only if every candidate
+ * fails.
+ */
+export async function llmCallDetailed(prompt: string, env: Env, maxTokens: number = 1024): Promise<{ response: string; model: string }> {
     const configured = (env as Env & { LLM_MODEL?: string }).LLM_MODEL;
     const models = configured
         ? [configured, ...FALLBACK_TEXT_MODELS.filter(m => m !== configured)]
@@ -25,15 +33,29 @@ export async function llmCall(prompt: string, env: Env): Promise<string> {
             // deprecations), so we bypass the generated fixed model-name union.
             const result = await (env.AI.run as (m: string, o: unknown) => Promise<{ response?: string }>)(model, {
                 messages: [{ role: "user", content: prompt }],
-                max_tokens: 1024,
+                max_tokens: maxTokens,
             });
-            return result.response ?? "";
+            return { response: result.response ?? "", model };
         } catch (e) {
             lastError = e;
             console.error(`llmCall: model ${model} unavailable, trying next:`, String(e));
         }
     }
     throw lastError ?? new Error("llmCall: no text-generation model available");
+}
+
+export async function llmCall(prompt: string, env: Env): Promise<string> {
+    return (await llmCallDetailed(prompt, env)).response;
+}
+
+/**
+ * Lightweight liveness probe for text generation — used by health_check so a
+ * model deprecation/outage is caught instead of silently breaking every
+ * AI-dependent tool. Returns the working model id, or throws.
+ */
+export async function checkTextGeneration(env: Env): Promise<string> {
+    const { model } = await llmCallDetailed("Reply with the single word: ok", env, 5);
+    return model;
 }
 
 export async function triageText(text: string, env: Env): Promise<{

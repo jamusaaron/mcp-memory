@@ -3,12 +3,37 @@ import { MyMCP } from "./mcp";
 import { initializeDatabase } from "./schema";
 import { queryMemories, deleteMemory, updateMemory, getMemoryById, insertMemory, listDistinctUserIds, runDecaySweep } from "./utils/db";
 import { deleteVectorById, storeMemoryVector } from "./utils/vectorize";
+import { checkTextGeneration } from "./utils/ai";
 
 const app = new Hono<{
     Bindings: Env;
 }>();
 
 let dbInitialized = false;
+
+// Self-test: probe Workers AI text generation and persist the result to D1
+// (kv_store table, key __ai_selftest__). This always runs in the Worker
+// runtime — i.e. the freshly-deployed code — so it verifies the live text
+// model even when a Durable Object MCP session is pinned to older code, and
+// even when the Worker can't be reached over HTTP from outside. The row is
+// inspectable directly via a D1 query.
+let lastSelfTest = 0;
+async function runAiSelfTest(env: Env): Promise<void> {
+    let result: Record<string, string>;
+    try {
+        const model = await checkTextGeneration(env);
+        result = { status: "ok", model, ts: new Date().toISOString() };
+    } catch (e) {
+        result = { status: "fail", error: String(e), ts: new Date().toISOString() };
+    }
+    try {
+        await env.DB.prepare(
+            "INSERT INTO kv_store (key, value, expires_at, updated_at) VALUES ('__ai_selftest__', ?, NULL, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, expires_at=NULL, updated_at=excluded.updated_at"
+        ).bind(JSON.stringify(result), new Date().toISOString()).run();
+    } catch (e) {
+        console.error("AI self-test: failed to persist result:", e);
+    }
+}
 
 // Optional API-key auth: set the MEMORY_API_KEY secret (wrangler secret put MEMORY_API_KEY)
 // to require `Authorization: Bearer <key>` or `?key=<key>` on all data routes.
@@ -43,6 +68,15 @@ app.use("*", async (c, next) => {
             console.error("Failed to initialize database:", e);
         }
     }
+
+    // Opportunistically refresh the AI self-test (at most once every 90s), in
+    // the background so it never delays the response. Runs in fresh Worker code.
+    const now = Date.now();
+    if (now - lastSelfTest > 90000) {
+        lastSelfTest = now;
+        try { c.executionCtx.waitUntil(runAiSelfTest(c.env)); } catch { /* no execution ctx (e.g. some test paths) */ }
+    }
+
     await next();
 });
 
@@ -174,6 +208,7 @@ export default {
     fetch: app.fetch,
     async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
         ctx.waitUntil(runScheduledDecaySweep(env));
+        ctx.waitUntil(runAiSelfTest(env));
     },
 };
 

@@ -103,11 +103,8 @@ The system finds conceptually related information even when the exact words don'
 
 MCP Memory implements several security measures to protect user data:
 
-- Each user's memories are stored in **isolated namespaces** within Vectorize for data separation
-- Built-in **rate limiting** prevents abuse (**100 req/min** - you can change it in wrangler.jsonc)
-- **Authentication is based on userId only**
-  - While this is sufficient for basic protection due to rate limiting
-  - Additional authentication layers (like API keys or OAuth) can be easily added if needed
+- Each user's memories are stored in **isolated namespaces** within Vectorize and D1 for data separation
+- **Optional API-key authentication** — set the `MEMORY_API_KEY` secret to require `Authorization: Bearer <key>` (or `?key=<key>`) on all data routes. Off by default; when unset, access is by userId namespace.
 - All data is stored in Cloudflare's secure infrastructure
 - All communications are secured with industry-standard TLS encryption (automatically provided by Cloudflare's SSL/TLS certification)
 

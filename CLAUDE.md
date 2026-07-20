@@ -74,17 +74,25 @@ Semantic search, AI triage, and contradiction detection require Workers AI + Vec
 
 ## Write Cascade
 
-Memory writes automatically keep two derived documents current, without an AI call on every write:
+Memory writes automatically keep three derived documents current, without an AI call on every write:
 
 - **Living summary** (KV, `get_living_summary`/`rebuild_living_summary`) — an AI-generated overview built from all active memories
 - **Self-profile** (R2/D1 static file `self_profile`, `rebuild_self_profile`) — built from memories in the `identity`, `preferences`, `likes`, `goals`, and `rules` categories
+- **Behavioral model** (KV, `behavioral_model`) — built from behavioral observations and personality feedback
 
-`write_memory`, `batch_write_memories`, `edit_memory` (on text changes), `suppress_memory`, `restore_memory`, and `forget_memory` all bump a cheap per-user dirty counter (`src/utils/cascade.ts`, no AI call). Two triggers consume it:
+`write_memory`, `batch_write_memories`, `edit_memory` (on text changes), `suppress_memory`, `restore_memory`, and `forget_memory` bump the living-summary/self-profile dirty counters; `record_observation` and `personality_feedback` bump the behavioral-model counter (`src/utils/cascade.ts`, no AI call). Two triggers consume them:
 
-- **Threshold-based**: on every write, if the counter has crossed 10 (living summary) or 5 (self-profile) unsummarized changes, that document is rebuilt automatically — so a burst of writes pays the AI cost once instead of on every call.
-- **Session-boundary**: `session_close` rebuilds either document if its counter is non-zero at all, since a session boundary is infrequent enough that the AI cost is worth paying regardless of how small the change was.
+- **Threshold-based**: on every write, if a counter has crossed its threshold (10 living summary, 5 self-profile, 5 behavioral model) the corresponding document is rebuilt automatically — so a burst of writes pays the AI cost once instead of on every call.
+- **Session-boundary**: `session_close` rebuilds any document whose counter is non-zero, since a session boundary is infrequent enough that the AI cost is worth paying regardless of how small the change was.
 
 `get_session_brief` surfaces staleness directly (e.g. "N memory changes since this was last built") so the caller knows whether to trust the cached summary or trigger a manual rebuild. All rebuild attempts are best-effort — a failure (e.g. Workers AI unreachable) is logged and leaves the dirty counter untouched rather than failing the write/close that triggered it.
+
+## Cross-Tool Integration
+
+Beyond the write cascade, several tools feed each other so knowledge isn't stranded:
+
+- **Answered questions become memories.** `record_user_answer` closes an uncertainty *and* (by default) writes the resolved question/answer as a memory, running the write cascade — so a clarification you asked for via `ask_user` is retained, not lost when the question closes. Pass `store_as_memory=false` to opt out.
+- **`get_session_brief` is the operational hub.** Alongside the living summary and current context, it pulls in open uncertainties (from `ask_user`) and memories needing reverification (decayed confidence), so a session starts knowing what to ask and what to confirm without separately calling `list_open_uncertainties` or `list_reverify_queue`.
 
 ## Scheduled Maintenance
 

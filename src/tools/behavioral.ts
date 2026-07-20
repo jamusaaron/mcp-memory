@@ -1,9 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertBehavioralObservation, getBehavioralObservations, insertPersonalityFeedback, getPersonalityFeedback } from "../utils/db";
-import { getPersonalityCache, putPersonalityCache, getBehavioralCache, putBehavioralCache } from "../utils/kv";
+import { getPersonalityCache, putPersonalityCache, getBehavioralCache } from "../utils/kv";
 import { readStaticFile, writeStaticFile } from "../utils/r2";
 import { llmCall } from "../utils/ai";
+import { markObservationRecorded, autoRebuildBehavioralIfDirty, rebuildBehavioralModelNow } from "../utils/cascade";
 
 export function registerBehavioralTools(server: McpServer, env: Env, userId: string) {
     server.tool(
@@ -17,6 +18,8 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
         async ({ observation_type, content, context }) => {
             try {
                 const id = await insertBehavioralObservation(userId, observation_type, content, context ?? null, env);
+                await markObservationRecorded(userId, env);
+                await autoRebuildBehavioralIfDirty(userId, env);
                 return { content: [{ type: "text", text: `Observation recorded [${id}]: [${observation_type}] ${content}` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to record observation: " + String(error) }] };
@@ -35,18 +38,10 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
                     if (cached) return { content: [{ type: "text", text: cached }] };
                 }
 
-                const observations = await getBehavioralObservations(userId, env, undefined, 100);
-                if (observations.length === 0) {
+                const model = await rebuildBehavioralModelNow(userId, env);
+                if (!model) {
                     return { content: [{ type: "text", text: "No behavioral observations recorded yet. Use record_observation to start building the model." }] };
                 }
-
-                const items = observations.map(o => `[${o.observation_type}] ${o.content}`).join("\n");
-                const model = await llmCall(
-                    `Build a behavioral model from these observations about a user's communication patterns. Organize into: communication style, correction patterns, preference signals, and behavioral tendencies.\n\n${items}`,
-                    env
-                );
-
-                await putBehavioralCache(userId, model, env);
                 return { content: [{ type: "text", text: model }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to get behavioral model: " + String(error) }] };
@@ -195,6 +190,8 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
                     `${params.tone}/${params.mode} in "${params.situation}" → ${params.outcome} (${params.feedback_score})`,
                     null, env
                 );
+                await markObservationRecorded(userId, env);
+                await autoRebuildBehavioralIfDirty(userId, env);
 
                 return { content: [{ type: "text", text: `Personality feedback recorded: ${params.tone}/${params.mode} scored ${params.feedback_score}.` }] };
             } catch (error) {

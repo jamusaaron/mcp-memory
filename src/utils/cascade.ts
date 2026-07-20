@@ -11,32 +11,35 @@
 // All rebuild calls are best-effort — a failure here never fails the memory
 // write or session close that triggered it.
 
-import { queryMemories } from "./db";
-import { generateSummary } from "./ai";
-import { getKV, putKV, putLivingSummary } from "./kv";
+import { queryMemories, getBehavioralObservations } from "./db";
+import { generateSummary, llmCall } from "./ai";
+import { getKV, putKV, putLivingSummary, putBehavioralCache } from "./kv";
 import { writeStaticFile } from "./r2";
 import type { Category } from "../types";
 
+type CascadeKind = "living_summary" | "self_profile" | "behavioral_model";
+
 const LIVING_SUMMARY_REBUILD_THRESHOLD = 10;
 const SELF_PROFILE_REBUILD_THRESHOLD = 5;
+const BEHAVIORAL_MODEL_REBUILD_THRESHOLD = 5;
 const SELF_PROFILE_CATEGORIES: Category[] = ["identity", "preferences", "likes", "goals", "rules"];
 
-function dirtyKey(kind: "living_summary" | "self_profile", userId: string): string {
+function dirtyKey(kind: CascadeKind, userId: string): string {
     return `${kind}_dirty:${userId}`;
 }
 
-async function getDirtyCount(kind: "living_summary" | "self_profile", userId: string, env: Env): Promise<number> {
+async function getDirtyCount(kind: CascadeKind, userId: string, env: Env): Promise<number> {
     const raw = await getKV(dirtyKey(kind, userId), env);
     return raw ? (parseInt(raw, 10) || 0) : 0;
 }
 
-async function bumpDirtyCount(kind: "living_summary" | "self_profile", userId: string, env: Env, by: number): Promise<void> {
+async function bumpDirtyCount(kind: CascadeKind, userId: string, env: Env, by: number): Promise<void> {
     if (by <= 0) return;
     const current = await getDirtyCount(kind, userId, env);
     await putKV(dirtyKey(kind, userId), String(current + by), env);
 }
 
-async function clearDirtyCount(kind: "living_summary" | "self_profile", userId: string, env: Env): Promise<void> {
+async function clearDirtyCount(kind: CascadeKind, userId: string, env: Env): Promise<void> {
     await putKV(dirtyKey(kind, userId), "0", env);
 }
 
@@ -74,6 +77,43 @@ export async function rebuildSelfProfileNow(userId: string, env: Env): Promise<s
     return summary;
 }
 
+export async function rebuildBehavioralModelNow(userId: string, env: Env): Promise<string | null> {
+    const observations = await getBehavioralObservations(userId, env, undefined, 100);
+    if (observations.length === 0) return null;
+    const items = observations.map(o => `[${o.observation_type}] ${o.content}`).join("\n");
+    const model = await llmCall(
+        `Build a behavioral model from these observations about a user's communication patterns. Organize into: communication style, correction patterns, preference signals, and behavioral tendencies.\n\n${items}`,
+        env
+    );
+    await putBehavioralCache(userId, model, env);
+    await clearDirtyCount("behavioral_model", userId, env);
+    return model;
+}
+
+/**
+ * Record that a behavioral observation (or personality feedback) was written.
+ * Cheap — no AI call. Bumps the behavioral-model dirty counter so the model
+ * is refreshed at threshold or session close instead of only on manual rebuild.
+ */
+export async function markObservationRecorded(userId: string, env: Env): Promise<void> {
+    try {
+        await bumpDirtyCount("behavioral_model", userId, env, 1);
+    } catch (e) {
+        console.error("Cascade: failed to mark behavioral dirty count:", e);
+    }
+}
+
+/** Auto-rebuild the behavioral model once enough observations have accumulated. Never throws. */
+export async function autoRebuildBehavioralIfDirty(userId: string, env: Env): Promise<void> {
+    try {
+        if ((await getDirtyCount("behavioral_model", userId, env)) >= BEHAVIORAL_MODEL_REBUILD_THRESHOLD) {
+            await rebuildBehavioralModelNow(userId, env);
+        }
+    } catch (e) {
+        console.error("Cascade: auto-rebuild of behavioral model skipped:", e);
+    }
+}
+
 /**
  * Called from write_memory / batch_write_memories after a successful insert.
  * Rebuilds only once enough writes have accumulated, so a burst of writes
@@ -102,9 +142,10 @@ export async function autoRebuildIfDirty(userId: string, env: Env): Promise<void
  * non-zero dirty count — a session boundary is infrequent enough that the AI
  * cost is worth paying even for a single new memory. Never throws.
  */
-export async function rebuildDirtyOnSessionClose(userId: string, env: Env): Promise<{ livingSummary: boolean; selfProfile: boolean }> {
+export async function rebuildDirtyOnSessionClose(userId: string, env: Env): Promise<{ livingSummary: boolean; selfProfile: boolean; behavioralModel: boolean }> {
     let livingSummary = false;
     let selfProfile = false;
+    let behavioralModel = false;
 
     try {
         if ((await getDirtyCount("living_summary", userId, env)) > 0) {
@@ -122,7 +163,15 @@ export async function rebuildDirtyOnSessionClose(userId: string, env: Env): Prom
         console.error("Cascade: session-close rebuild of self-profile skipped:", e);
     }
 
-    return { livingSummary, selfProfile };
+    try {
+        if ((await getDirtyCount("behavioral_model", userId, env)) > 0) {
+            behavioralModel = (await rebuildBehavioralModelNow(userId, env)) !== null;
+        }
+    } catch (e) {
+        console.error("Cascade: session-close rebuild of behavioral model skipped:", e);
+    }
+
+    return { livingSummary, selfProfile, behavioralModel };
 }
 
 /** Read-only staleness check for get_session_brief — no writes, no AI calls. */

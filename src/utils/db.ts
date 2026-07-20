@@ -263,6 +263,13 @@ export async function listUncertainties(userId: string, env: Env, status: string
     return res.results as unknown as Uncertainty[];
 }
 
+export async function getUncertaintyById(id: string, userId: string, env: Env): Promise<Uncertainty | null> {
+    const row = await env.DB.prepare(
+        "SELECT * FROM uncertainties WHERE id=? AND userId=?"
+    ).bind(id, userId).first();
+    return row ? (row as unknown as Uncertainty) : null;
+}
+
 export async function answerUncertainty(id: string, userId: string, answer: string, env: Env): Promise<void> {
     await env.DB.prepare(
         "UPDATE uncertainties SET status='answered', answer=?, answered_at=? WHERE id=? AND userId=?"

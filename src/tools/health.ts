@@ -2,11 +2,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getMemoryIndex, listPeople } from "../utils/db";
 import { listStaticFiles, r2Backend } from "../utils/r2";
 import { getKV, kvBackend } from "../utils/kv";
+import { checkTextGeneration } from "../utils/ai";
 
 export function registerHealthTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "health_check",
-        "Run a comprehensive health check on all system components: D1 database, Vectorize index, cache (KV or D1 fallback), static files (R2 or D1 fallback), and Workers AI. Returns per-component status with counts and diagnostics. Use this to verify the system is operational or to diagnose connectivity issues.",
+        "Run a comprehensive health check on all system components: D1 database, Vectorize index, cache (KV or D1 fallback), static files (R2 or D1 fallback), and Workers AI (both embeddings AND text generation — the latter is what the living summary, profiles, triage and behavioral model depend on). Returns per-component status with counts and diagnostics, including which text-generation model is currently live. Use this to verify the system is operational or to diagnose connectivity issues.",
         {},
         async () => {
             try {
@@ -51,9 +52,16 @@ export function registerHealthTools(server: McpServer, env: Env, userId: string)
 
                 try {
                     const test = await env.AI.run("@cf/baai/bge-m3", { text: "health check" }) as any;
-                    checks["Workers AI"] = test?.data?.[0] ? "OK — reachable" : "FAIL — unexpected response";
+                    checks["Workers AI (embeddings)"] = test?.data?.[0] ? "OK — reachable" : "FAIL — unexpected response";
                 } catch (e) {
-                    checks["Workers AI"] = `FAIL — ${String(e)}`;
+                    checks["Workers AI (embeddings)"] = `FAIL — ${String(e)}`;
+                }
+
+                try {
+                    const model = await checkTextGeneration(env);
+                    checks["Workers AI (text generation)"] = `OK — live model: ${model}`;
+                } catch (e) {
+                    checks["Workers AI (text generation)"] = `FAIL — ${String(e)} (living summary, profiles, triage & behavioral model depend on this)`;
                 }
 
                 const report = Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join("\n");

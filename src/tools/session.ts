@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { insertSessionLog, getSessionLogs, getRecentSessions, getMemoryIndex, getWriteActivity } from "../utils/db";
+import { insertSessionLog, getSessionLogs, getRecentSessions, getMemoryIndex, getWriteActivity, listUncertainties, getMemoriesNeedingReverification } from "../utils/db";
 import { getLivingSummary, putSessionState, getSessionState } from "../utils/kv";
 import { writeStaticFile, readStaticFile } from "../utils/r2";
 import { rebuildDirtyOnSessionClose, getStaleness, rebuildLivingSummaryNow } from "../utils/cascade";
@@ -9,7 +9,7 @@ import { rebuildDirtyOnSessionClose, getStaleness, rebuildLivingSummaryNow } fro
 export function registerSessionTools(server: McpServer, env: Env, userId: string) {
     server.tool(
         "get_session_brief",
-        "Start a new session by loading the user's living summary, recent activity, and current context. Call this at the beginning of every conversation to ensure continuity across sessions. Returns a comprehensive brief including memory store stats, the living summary, current context, and recent session history.",
+        "Start a new session by loading the user's living summary, recent activity, and current context. Call this at the beginning of every conversation to ensure continuity across sessions. Acts as the operational hub: alongside the summary and context, it surfaces open questions the assistant previously flagged (via ask_user) and memories whose confidence has decayed and need reverification — so you know at a glance what to ask or confirm without separately calling list_open_uncertainties or list_reverify_queue.",
         { session_id: z.string().optional().describe("Session ID — auto-generated if omitted") },
         async ({ session_id }) => {
             try {
@@ -21,6 +21,8 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                 const index = await getMemoryIndex(userId, env);
                 const contextCurrent = await readStaticFile(userId, "context_current", env);
                 const staleness = await getStaleness(userId, env);
+                const openUncertainties = await listUncertainties(userId, env);
+                const reverifyQueue = await getMemoriesNeedingReverification(userId, env);
 
                 let brief = `# Session Brief (${sid})\n\n`;
                 brief += `## Memory Store\n${index.total} memories across ${Object.keys(index.by_category).length} categories\n\n`;
@@ -36,6 +38,24 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
 
                 if (contextCurrent) {
                     brief += `## Current Context\n${contextCurrent}\n\n`;
+                }
+
+                if (openUncertainties.length > 0) {
+                    brief += `## Open Questions (${openUncertainties.length})\nYou flagged these earlier and haven't resolved them — raise the relevant ones, then close with record_user_answer.\n`;
+                    for (const u of openUncertainties.slice(0, 5)) {
+                        brief += `- [${u.id}] ${u.question}${u.context ? ` (${u.context})` : ""}\n`;
+                    }
+                    if (openUncertainties.length > 5) brief += `- …and ${openUncertainties.length - 5} more (list_open_uncertainties)\n`;
+                    brief += `\n`;
+                }
+
+                if (reverifyQueue.length > 0) {
+                    brief += `## Needs Reverification (${reverifyQueue.length})\nThese memories have decayed in confidence — confirm or correct them, then verify_memory to reset.\n`;
+                    for (const m of reverifyQueue.slice(0, 5)) {
+                        brief += `- [${m.id}] (conf ${m.confidence.toFixed(2)}) ${m.text.slice(0, 90)}${m.text.length > 90 ? "…" : ""}\n`;
+                    }
+                    if (reverifyQueue.length > 5) brief += `- …and ${reverifyQueue.length - 5} more (list_reverify_queue)\n`;
+                    brief += `\n`;
                 }
 
                 if (recentSessions.length > 0) {
@@ -111,6 +131,7 @@ export function registerSessionTools(server: McpServer, env: Env, userId: string
                 let response = `Session ${session_id} closed.`;
                 if (rebuilt.livingSummary) response += " Living summary refreshed.";
                 if (rebuilt.selfProfile) response += " Self-profile refreshed.";
+                if (rebuilt.behavioralModel) response += " Behavioral model refreshed.";
 
                 return { content: [{ type: "text", text: response }] };
             } catch (error) {

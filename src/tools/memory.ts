@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getUnembeddedMemories, getSuppressedMemories, runDecaySweep } from "../utils/db";
-import { storeMemoryVector, searchMemories, searchMemoriesWithFallback, deleteVectorById } from "../utils/vectorize";
+import { insertMemory, getMemoryById, updateMemory, deleteMemory, queryMemories, queryMemoriesByDate, queryMemoriesByTags, getMemoryIndex, getMemoriesNeedingReverification, getSuppressedMemories, runDecaySweep } from "../utils/db";
+import { storeMemoryVector, searchMemories, searchMemoriesWithFallback, deleteVectorById, backfillEmbeddingsForUser } from "../utils/vectorize";
 import { triageText, detectContradictions, analyzePatterns, generateSummary } from "../utils/ai";
 import { markMemoriesWritten, autoRebuildIfDirty } from "../utils/cascade";
 import { CATEGORIES, LAYERS, SOURCE_TYPES } from "../types";
@@ -680,24 +680,11 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
         {},
         async () => {
             try {
-                const unembedded = await getUnembeddedMemories(userId, env);
-                if (unembedded.length === 0) {
+                const { embedded, failed, pending } = await backfillEmbeddingsForUser(userId, env);
+                if (pending === 0) {
                     return { content: [{ type: "text", text: "All memories are already embedded." }] };
                 }
-
-                let success = 0;
-                let failed = 0;
-                for (const m of unembedded) {
-                    try {
-                        await storeMemoryVector(m.id, m.text, userId, env);
-                        await updateMemory(m.id, userId, { embedding_status: "embedded" } as any, env);
-                        success++;
-                    } catch {
-                        failed++;
-                    }
-                }
-
-                return { content: [{ type: "text", text: `Backfill complete: ${success} embedded, ${failed} failed out of ${unembedded.length} pending.` }] };
+                return { content: [{ type: "text", text: `Backfill complete: ${embedded} embedded, ${failed} failed out of ${pending} pending.` }] };
             } catch (error) {
                 return { content: [{ type: "text", text: "Failed to backfill embeddings: " + String(error) }] };
             }

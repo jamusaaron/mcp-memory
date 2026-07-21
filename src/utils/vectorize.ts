@@ -1,7 +1,30 @@
 import { v4 as uuidv4 } from "uuid";
-import { keywordSearchMemories } from "./db";
+import { keywordSearchMemories, getUnembeddedMemories, updateMemory } from "./db";
 
 const MINIMUM_SIMILARITY_SCORE = 0.4;
+
+/**
+ * Generate and store vector embeddings for a user's memories that are still
+ * pending (embedding_status !== 'embedded'). Shared by the backfill_embeddings
+ * tool and the scheduled() worker handler, so memories written by any path —
+ * including direct D1 inserts — get vectorized without manual intervention.
+ * Best-effort per memory; returns counts. Never throws.
+ */
+export async function backfillEmbeddingsForUser(userId: string, env: Env): Promise<{ embedded: number; failed: number; pending: number }> {
+    const unembedded = await getUnembeddedMemories(userId, env);
+    let embedded = 0;
+    let failed = 0;
+    for (const m of unembedded) {
+        try {
+            await storeMemoryVector(m.id, m.text, userId, env);
+            await updateMemory(m.id, userId, { embedding_status: "embedded" } as any, env);
+            embedded++;
+        } catch {
+            failed++;
+        }
+    }
+    return { embedded, failed, pending: unembedded.length };
+}
 
 export async function generateEmbeddings(text: string, env: Env): Promise<number[]> {
     const embeddings = (await env.AI.run("@cf/baai/bge-m3", { text })) as AiTextEmbeddingsOutput;

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { MyMCP } from "./mcp";
 import { initializeDatabase } from "./schema";
 import { queryMemories, deleteMemory, updateMemory, getMemoryById, insertMemory, listDistinctUserIds, runDecaySweep } from "./utils/db";
-import { deleteVectorById, storeMemoryVector } from "./utils/vectorize";
+import { deleteVectorById, storeMemoryVector, backfillEmbeddingsForUser } from "./utils/vectorize";
 import { checkTextGeneration } from "./utils/ai";
 
 const app = new Hono<{
@@ -187,6 +187,7 @@ async function runScheduledDecaySweep(env: Env): Promise<void> {
         const userIds = await listDistinctUserIds(env);
         let totalDecayed = 0;
         let totalFlagged = 0;
+        let totalEmbedded = 0;
 
         for (const userId of userIds) {
             try {
@@ -196,11 +197,19 @@ async function runScheduledDecaySweep(env: Env): Promise<void> {
             } catch (e) {
                 console.error(`Scheduled sweep: decay failed for user ${userId}:`, e);
             }
+            // Auto-backfill any pending embeddings (e.g. from writes made while
+            // Vectorize/Workers AI was unavailable, or via direct D1 inserts).
+            try {
+                const { embedded } = await backfillEmbeddingsForUser(userId, env);
+                totalEmbedded += embedded;
+            } catch (e) {
+                console.error(`Scheduled sweep: embedding backfill failed for user ${userId}:`, e);
+            }
         }
 
-        console.log(`Scheduled decay sweep: ${userIds.length} users, ${totalDecayed} memories decayed, ${totalFlagged} flagged for reverification.`);
+        console.log(`Scheduled maintenance: ${userIds.length} users, ${totalDecayed} decayed, ${totalFlagged} flagged, ${totalEmbedded} embeddings backfilled.`);
     } catch (e) {
-        console.error("Scheduled decay sweep failed:", e);
+        console.error("Scheduled maintenance failed:", e);
     }
 }
 

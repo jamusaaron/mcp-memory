@@ -49,6 +49,22 @@ export type DigestSource = {
 };
 
 export function parseIsoTimestamp(value: string, field: string): string {
+	const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+	if (!match) throw new Error(`${field} must be a valid ISO timestamp`);
+	const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
+	const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+	const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+	if (
+		month < 1 ||
+		month > 12 ||
+		day < 1 ||
+		day > daysInMonth[month - 1] ||
+		hour > 23 ||
+		minute > 59 ||
+		second > 59
+	) {
+		throw new Error(`${field} must be a valid ISO timestamp`);
+	}
 	const date = new Date(value);
 	if (!Number.isFinite(date.getTime())) throw new Error(`${field} must be a valid ISO timestamp`);
 	return date.toISOString();
@@ -68,6 +84,11 @@ export function projectTag(project: string): string {
 
 function cleanTags(tags: string[]): string[] {
 	return [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+}
+
+function boundedLimit(value: number): number {
+	if (!Number.isFinite(value) || value <= 0) return 0;
+	return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
 }
 
 export function buildDecisionRecord(input: DecisionInput, now: string): DecisionRecord {
@@ -142,7 +163,7 @@ export function classifyMemoryChanges(
 		})
 		.filter((change) => change.changedAt >= threshold)
 		.sort((a, b) => b.changedAt.localeCompare(a.changedAt))
-		.slice(0, Math.max(0, limit));
+		.slice(0, boundedLimit(limit));
 }
 
 export function rankDigestSources(
@@ -169,17 +190,17 @@ export function rankDigestSources(
 			};
 		})
 		.sort((a, b) => b.score - a.score || b.source.createdAt.localeCompare(a.source.createdAt))
-		.slice(0, Math.max(0, maxSources))
+		.slice(0, boundedLimit(maxSources))
 		.map(({ source }) => source);
 }
 
 export function renderExtractiveDigest(_topic: string, sources: DigestSource[]): string {
-	return sources.map((source) => `- [${source.id}] ${source.text}`).join("\n");
+	return sources.map((source) => `- [source:${source.id}] ${source.text}`).join("\n");
 }
 
 export function digestHasValidCitations(digest: string, sources: DigestSource[]): boolean {
 	if (!digest.trim() || sources.length === 0) return false;
 	const known = new Set(sources.map((source) => source.id));
-	const citations = [...digest.matchAll(/\[([^\]]+)\]/g)].map((match) => match[1]);
+	const citations = [...digest.matchAll(/\[source:([^\]\s]+)\]/g)].map((match) => match[1]);
 	return citations.length > 0 && citations.every((id) => known.has(id));
 }

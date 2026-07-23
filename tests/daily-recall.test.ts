@@ -6,6 +6,7 @@ import {
 	buildDecisionRecord,
 	classifyMemoryChanges,
 	digestHasValidCitations,
+	parseIsoTimestamp,
 	parseDecisionMemory,
 	projectTag,
 	rankDigestSources,
@@ -40,6 +41,15 @@ const baseMemory = (overrides: Partial<Memory> = {}): Memory => ({
 
 test("projectTag creates a stable namespaced slug", () => {
 	assert.equal(projectTag("MCP Memory / Daily Recall"), "project:mcp-memory-daily-recall");
+});
+
+test("parseIsoTimestamp accepts complete ISO timestamps and canonicalizes milliseconds", () => {
+	assert.equal(parseIsoTimestamp("2026-07-24T02:00:00.1Z", "tested_at"), "2026-07-24T02:00:00.100Z");
+});
+
+test("parseIsoTimestamp rejects non-ISO and normalized invalid calendar dates", () => {
+	assert.throws(() => parseIsoTimestamp("2026/07/24 02:00:00", "tested_at"), /tested_at must be a valid ISO timestamp/);
+	assert.throws(() => parseIsoTimestamp("2026-02-30T02:00:00.000Z", "tested_at"), /tested_at must be a valid ISO timestamp/);
 });
 
 test("buildDecisionRecord adds stable tags and complete readable fields", () => {
@@ -107,6 +117,20 @@ test("classifyMemoryChanges distinguishes created from updated", () => {
 	);
 });
 
+test("classifyMemoryChanges filters suppressed and unwanted categories and bounds limits", () => {
+	const memories = [
+		baseMemory({ id: "allowed", updated_at: "2026-07-24T03:00:00.000Z" }),
+		baseMemory({ id: "suppressed", suppressed: true, updated_at: "2026-07-24T02:00:00.000Z" }),
+		baseMemory({ id: "other", category: "goals", updated_at: "2026-07-24T01:00:00.000Z" }),
+	];
+	assert.deepEqual(
+		classifyMemoryChanges(memories, "2026-07-24T00:00:00.000Z", ["projects"], 1.9).map((change) => change.id),
+		["allowed"],
+	);
+	assert.deepEqual(classifyMemoryChanges(memories, "2026-07-24T00:00:00.000Z", undefined, 0), []);
+	assert.deepEqual(classifyMemoryChanges(memories, "2026-07-24T00:00:00.000Z", undefined, -1), []);
+});
+
 test("rankDigestSources prefers relevance then recency and remains bounded", () => {
 	const ranked = rankDigestSources(
 		[
@@ -119,11 +143,22 @@ test("rankDigestSources prefers relevance then recency and remains bounded", () 
 	assert.deepEqual(ranked.map((source) => source.id), ["a"]);
 });
 
-test("renderExtractiveDigest cites every rendered memory", () => {
+test("rankDigestSources bounds zero, negative, and fractional source limits", () => {
+	const candidates = [
+		{ memory: baseMemory({ id: "a" }), relevance: 0.9 },
+		{ memory: baseMemory({ id: "b", created_at: "2026-07-23T00:00:00.000Z" }), relevance: 0.8 },
+	];
+	assert.deepEqual(rankDigestSources(candidates, "2026-07-24T04:00:00.000Z", 0), []);
+	assert.deepEqual(rankDigestSources(candidates, "2026-07-24T04:00:00.000Z", -1), []);
+	assert.deepEqual(rankDigestSources(candidates, "2026-07-24T04:00:00.000Z", 1.9).map((source) => source.id), ["a"]);
+});
+
+test("renderExtractiveDigest safely distinguishes source text brackets from citations", () => {
 	const text = renderExtractiveDigest("MCP memory", [
-		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 },
+		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added [context].", relevance: 0.9 },
 	]);
-	assert.equal(text, '- [a] Added daily recall.');
+	assert.equal(text, '- [source:a] Added [context].');
+	assert.equal(digestHasValidCitations(text, [{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added [context].", relevance: 0.9 }]), true);
 });
 
 test("digestHasValidCitations rejects missing and unknown source IDs", () => {
@@ -131,6 +166,6 @@ test("digestHasValidCitations rejects missing and unknown source IDs", () => {
 		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 },
 	];
 	assert.equal(digestHasValidCitations("Added daily recall.", sources), false);
-	assert.equal(digestHasValidCitations("Added daily recall [other].", sources), false);
-	assert.equal(digestHasValidCitations("Added daily recall [a].", sources), true);
+	assert.equal(digestHasValidCitations("Added daily recall [source:other].", sources), false);
+	assert.equal(digestHasValidCitations("Added daily recall [source:a].", sources), true);
 });

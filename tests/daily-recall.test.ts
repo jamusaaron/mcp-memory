@@ -186,6 +186,18 @@ test("rankDigestSources rejects malformed source timestamps deterministically", 
 	);
 });
 
+test("rankDigestSources uses ID as a final tie-breaker independent of input order", () => {
+	const ranked = rankDigestSources(
+		[
+			{ memory: baseMemory({ id: "b" }), relevance: 0.9 },
+			{ memory: baseMemory({ id: "a" }), relevance: 0.9 },
+		],
+		"2026-07-24T04:00:00.000Z",
+		2,
+	);
+	assert.deepEqual(ranked.map((source) => source.id), ["a", "b"]);
+});
+
 test("renderExtractiveDigest restores the bracketed ID citation contract", () => {
 	const text = renderExtractiveDigest("MCP memory", [
 		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 },
@@ -216,4 +228,5 @@ test("digestHasValidCitations rejects missing and unknown source IDs", () => {
 	assert.equal(digestHasValidCitations("Added daily recall.", sources), false);
 	assert.equal(digestHasValidCitations("Added daily recall [other].", sources), false);
 	assert.equal(digestHasValidCitations("Added daily recall [a].", sources), true);
+	assert.equal(digestHasValidCitations("[a] [unknown citation]", sources), false);
 });

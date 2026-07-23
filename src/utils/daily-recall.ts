@@ -199,7 +199,7 @@ export function rankDigestSources(
 				score,
 			};
 		})
-		.sort((a, b) => b.score - a.score || b.source.createdAt.localeCompare(a.source.createdAt))
+		.sort((a, b) => b.score - a.score || b.source.createdAt.localeCompare(a.source.createdAt) || a.source.id.localeCompare(b.source.id))
 		.slice(0, boundedLimit(maxSources))
 		.map(({ source }) => source);
 }
@@ -211,6 +211,6 @@ export function renderExtractiveDigest(_topic: string, sources: DigestSource[]):
 export function digestHasValidCitations(digest: string, sources: DigestSource[]): boolean {
 	if (!digest.trim() || sources.length === 0) return false;
 	const known = new Set(sources.map((source) => citationId(source.id)));
-	const citations = [...digest.matchAll(/(?<!\\)\[([^\]\s]+)\]/g)].map((match) => match[1]);
+	const citations = [...digest.matchAll(/(?<!\\)\[([^\]]*)\]/g)].map((match) => match[1]);
 	return citations.length > 0 && citations.every((id) => known.has(id));
 }

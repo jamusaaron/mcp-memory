@@ -1,14 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { CATEGORIES, type Memory } from "../types";
+import { llmCallSystem } from "../utils/ai";
 import {
-	getMemoryById,
-	insertMemory,
-	queryMemoryChanges,
-	queryMemoriesByTags,
-	updateMemory,
-} from "../utils/db";
-import {
+	type DigestSource,
 	buildDecisionRecord,
 	classifyMemoryChanges,
 	digestHasValidCitations,
@@ -17,9 +12,14 @@ import {
 	projectTag,
 	rankDigestSources,
 	renderExtractiveDigest,
-	type DigestSource,
 } from "../utils/daily-recall";
-import { llmCallSystem } from "../utils/ai";
+import {
+	getMemoryById,
+	insertMemory,
+	queryMemoriesByTags,
+	queryMemoryChanges,
+	updateMemory,
+} from "../utils/db";
 import { toolError, toolStructured } from "../utils/tool-result";
 import { searchMemories, storeMemoryVector } from "../utils/vectorize";
 
@@ -44,10 +44,13 @@ function digestHasCitedClaims(
 		.split(/\n+|(?<=[.!?])\s+/)
 		.map((claim) => claim.trim())
 		.filter(Boolean);
-	return claims.length > 0 && claims.every((claim) => {
-		const citations = [...claim.matchAll(/(?<!\\)\[([^\]]*)\]/g)].map((match) => match[1]);
-		return citations.some((id) => known.has(id));
-	});
+	return (
+		claims.length > 0 &&
+		claims.every((claim) => {
+			const citations = [...claim.matchAll(/(?<!\\)\[([^\]]*)\]/g)].map((match) => match[1]);
+			return citations.some((id) => known.has(id));
+		})
+	);
 }
 
 function renderDigestSource(source: DigestSource, text: string): string {
@@ -61,13 +64,17 @@ function fitDigestSourceText(source: DigestSource, maxLength: number): string | 
 	let high = source.text.length;
 	while (low < high) {
 		const middle = Math.ceil((low + high) / 2);
-		if (renderDigestSource(source, source.text.slice(0, middle)).length <= maxLength) low = middle;
+		if (renderDigestSource(source, source.text.slice(0, middle)).length <= maxLength)
+			low = middle;
 		else high = middle - 1;
 	}
 	return source.text.slice(0, low);
 }
 
-function buildBoundedDigestPrompt(topic: string, candidates: DigestSource[]): {
+function buildBoundedDigestPrompt(
+	topic: string,
+	candidates: DigestSource[],
+): {
 	sources: DigestSource[];
 	userPrompt: string;
 } {
@@ -172,7 +179,12 @@ export function createDailyRecallHandlers(
 						layer: memory.layer,
 						salience: memory.salience,
 					});
-					await deps.updateMemory(memory.id, userId, { embedding_status: "embedded" }, env);
+					await deps.updateMemory(
+						memory.id,
+						userId,
+						{ embedding_status: "embedded" },
+						env,
+					);
 					embedding_status = "embedded";
 				} catch {
 					embedding_status = "pending";
@@ -185,7 +197,10 @@ export function createDailyRecallHandlers(
 					tags: record.tags,
 					embedding_status,
 				};
-				return toolStructured(`Decision stored [${memory.id}]: ${input.decision.trim()}`, structuredContent);
+				return toolStructured(
+					`Decision stored [${memory.id}]: ${input.decision.trim()}`,
+					structuredContent,
+				);
 			} catch (error) {
 				return toolError(error);
 			}
@@ -206,11 +221,17 @@ export function createDailyRecallHandlers(
 				if (Boolean(input.start_date) !== Boolean(input.end_date)) {
 					throw new Error("start_date and end_date must be supplied together");
 				}
-				const requiredTags = ["decision", ...(input.project ? [projectTag(input.project)] : [])];
+				const requiredTags = [
+					"decision",
+					...(input.project ? [projectTag(input.project)] : []),
+				];
 				const tagged = await deps.queryMemoriesByTags(userId, requiredTags, env, 100);
 				let byId = new Map<string, { memory: Memory; relevance?: number }>();
 				for (const memory of tagged) {
-					if (!memory.suppressed && requiredTags.every((tag) => memory.tags.includes(tag))) {
+					if (
+						!memory.suppressed &&
+						requiredTags.every((tag) => memory.tags.includes(tag))
+					) {
 						byId.set(memory.id, { memory });
 					}
 				}
@@ -238,12 +259,20 @@ export function createDailyRecallHandlers(
 						}
 					}
 				}
-				const start = input.start_date ? parseIsoTimestamp(input.start_date, "start_date") : undefined;
-				const end = input.end_date ? parseIsoTimestamp(input.end_date, "end_date") : undefined;
+				const start = input.start_date
+					? parseIsoTimestamp(input.start_date, "start_date")
+					: undefined;
+				const end = input.end_date
+					? parseIsoTimestamp(input.end_date, "end_date")
+					: undefined;
 				const decisions = [...byId.values()]
 					.map(({ memory, relevance }) => parseDecisionMemory(memory, relevance))
 					.filter((value): value is NonNullable<typeof value> => value !== null)
-					.filter((value) => (!start || value.decided_at >= start) && (!end || value.decided_at <= end))
+					.filter(
+						(value) =>
+							(!start || value.decided_at >= start) &&
+							(!end || value.decided_at <= end),
+					)
 					.sort(
 						(a, b) =>
 							b.decided_at.localeCompare(a.decided_at) ||
@@ -253,7 +282,9 @@ export function createDailyRecallHandlers(
 					.slice(0, limit);
 				const structuredContent = { count: decisions.length, decisions };
 				const text = decisions.length
-					? decisions.map((item) => `- [${item.id}] ${item.decided_at}: ${item.decision}`).join("\n")
+					? decisions
+							.map((item) => `- [${item.id}] ${item.decided_at}: ${item.decision}`)
+							.join("\n")
 					: "No matching decisions found.";
 				return toolStructured(text, structuredContent);
 			} catch (error) {
@@ -271,20 +302,29 @@ export function createDailyRecallHandlers(
 					input.categories !== undefined &&
 					(!Array.isArray(input.categories) ||
 						input.categories.some(
-							(category) => !CATEGORIES.includes(category as (typeof CATEGORIES)[number]),
+							(category) =>
+								!CATEGORIES.includes(category as (typeof CATEGORIES)[number]),
 						))
 				) {
 					throw new Error("categories must contain only supported memory categories");
 				}
 				const since = parseIsoTimestamp(input.since, "since");
-				const memories = await deps.queryMemoryChanges(userId, since, env, MAX_CHANGE_QUERY_LIMIT);
+				const memories = await deps.queryMemoryChanges(
+					userId,
+					since,
+					env,
+					MAX_CHANGE_QUERY_LIMIT,
+				);
 				const changes = classifyMemoryChanges(
 					memories,
 					since,
 					input.categories,
 					MAX_CHANGE_QUERY_LIMIT,
 				)
-					.sort((a, b) => b.changedAt.localeCompare(a.changedAt) || a.id.localeCompare(b.id))
+					.sort(
+						(a, b) =>
+							b.changedAt.localeCompare(a.changedAt) || a.id.localeCompare(b.id),
+					)
 					.slice(0, limit);
 				const counts = {
 					created: changes.filter((item) => item.changeType === "created").length,
@@ -298,7 +338,12 @@ export function createDailyRecallHandlers(
 				};
 				const text = changes.length
 					? changes
-							.map((item) => `- ${item.changeType.toUpperCase()} [${item.id}] ${item.changedAt}: ${item.text}`)
+							.map(
+								(item) =>
+									`- ${item.changeType.toUpperCase()} [${item.id}] ${
+										item.changedAt
+									}: ${item.text}`,
+							)
 							.join("\n")
 					: `No memory changes since ${since}.`;
 				return toolStructured(text, structuredContent);
@@ -322,18 +367,23 @@ export function createDailyRecallHandlers(
 				}
 				const days = input.days === undefined ? 14 : input.days;
 				const maxSources = input.max_sources === undefined ? 12 : input.max_sources;
-				const includeDecisions = input.include_decisions === undefined ? true : input.include_decisions;
+				const includeDecisions =
+					input.include_decisions === undefined ? true : input.include_decisions;
 				if (!Number.isInteger(days) || days < 1 || days > 365) {
 					throw new Error("days must be an integer from 1 to 365");
 				}
 				if (!Number.isInteger(maxSources) || maxSources < 1 || maxSources > 30) {
 					throw new Error("max_sources must be an integer from 1 to 30");
 				}
-				if (typeof includeDecisions !== "boolean") throw new Error("include_decisions must be a boolean");
+				if (typeof includeDecisions !== "boolean")
+					throw new Error("include_decisions must be a boolean");
 				const now = deps.now();
 				const start = new Date(now.getTime() - days * 86_400_000).toISOString();
 				const maxHits = maxSources * 3;
-				const hits = (await deps.searchMemories(topic, userId, env, maxHits)).slice(0, maxHits);
+				const hits = (await deps.searchMemories(topic, userId, env, maxHits)).slice(
+					0,
+					maxHits,
+				);
 				const bestHits = new Map<string, (typeof hits)[number]>();
 				for (const hit of hits) {
 					const existing = bestHits.get(hit.id);
@@ -359,9 +409,14 @@ export function createDailyRecallHandlers(
 						relevance: hit.score,
 					});
 				}
-				const rankedSources = rankDigestSources(candidates, now.toISOString(), maxSources).map(
-					(source) => ({ ...source, text: source.text.slice(0, MAX_DIGEST_SOURCE_CHARS) }),
-				);
+				const rankedSources = rankDigestSources(
+					candidates,
+					now.toISOString(),
+					maxSources,
+				).map((source) => ({
+					...source,
+					text: source.text.slice(0, MAX_DIGEST_SOURCE_CHARS),
+				}));
 				const { sources, userPrompt } = buildBoundedDigestPrompt(topic, rankedSources);
 				let digest = sources.length ? renderExtractiveDigest(topic, sources) : "";
 				let usedFallback = false;
@@ -387,7 +442,9 @@ export function createDailyRecallHandlers(
 				};
 				const prefix = usedFallback ? "Topic digest (extractive fallback)" : "Topic digest";
 				const sourceLine = sources.length
-					? `\n\nSources: ${sources.map((source) => `[${citationId(source.id)}]`).join(" ")}`
+					? `\n\nSources: ${sources
+							.map((source) => `[${citationId(source.id)}]`)
+							.join(" ")}`
 					: "";
 				return toolStructured(
 					`${prefix}\n\n${structuredContent.digest}${sourceLine}`,
@@ -433,7 +490,8 @@ export function registerDailyRecallTools(server: McpServer, env: Env, userId: st
 	server.registerTool(
 		"remember_decision",
 		{
-			description: "Store a decision with its rationale, project, alternatives, and date as a consistently tagged ordinary memory.",
+			description:
+				"Store a decision with its rationale, project, alternatives, and date as a consistently tagged ordinary memory.",
 			inputSchema: z.object({
 				decision: z.string().trim().min(1),
 				rationale: z.string().trim().min(1).optional(),
@@ -485,7 +543,8 @@ export function registerDailyRecallTools(server: McpServer, env: Env, userId: st
 	server.registerTool(
 		"what_changed",
 		{
-			description: "Show active memories created or materially updated since an ISO timestamp.",
+			description:
+				"Show active memories created or materially updated since an ISO timestamp.",
 			inputSchema: z.object({
 				since: z.string(),
 				limit: z.number().int().min(1).max(100).default(25),
@@ -504,7 +563,8 @@ export function registerDailyRecallTools(server: McpServer, env: Env, userId: st
 	server.registerTool(
 		"topic_digest",
 		{
-			description: "Summarize recent memories relevant to a topic with supporting memory IDs.",
+			description:
+				"Summarize recent memories relevant to a topic with supporting memory IDs.",
 			inputSchema: z.object({
 				topic: z.string().trim().min(1),
 				days: z.number().int().min(1).max(365).default(14),

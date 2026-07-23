@@ -799,7 +799,11 @@ export async function touchMemoryAccess(id: string, userId: string, env: Env): P
 		.run();
 }
 
-export async function touchMemoryAccessBatch(ids: string[], userId: string, env: Env): Promise<void> {
+export async function touchMemoryAccessBatch(
+	ids: string[],
+	userId: string,
+	env: Env,
+): Promise<void> {
 	if (ids.length === 0) return;
 	const batch = ids.slice(0, 25);
 	await Promise.all(batch.map((id) => touchMemoryAccess(id, userId, env)));
@@ -826,7 +830,10 @@ export async function fulltextSearchMemories(
 	}
 
 	const conditions = tokens
-		.map(() => "(LOWER(text) LIKE ? OR LOWER(COALESCE(subject,'')) LIKE ? OR LOWER(tags) LIKE ?)")
+		.map(
+			() =>
+				"(LOWER(text) LIKE ? OR LOWER(COALESCE(subject,'')) LIKE ? OR LOWER(tags) LIKE ?)",
+		)
 		.join(" OR ");
 	const params: unknown[] = [userId];
 	for (const t of tokens) {
@@ -942,9 +949,7 @@ export async function createAgentTask(
 			now,
 		)
 		.run();
-	const row = await env.DB.prepare("SELECT * FROM agent_tasks WHERE id=?")
-		.bind(id)
-		.first();
+	const row = await env.DB.prepare("SELECT * FROM agent_tasks WHERE id=?").bind(id).first();
 	return rowToTask(row as Record<string, unknown>);
 }
 
@@ -965,7 +970,9 @@ export async function listAgentTasks(
 	}
 	sql += " ORDER BY priority DESC, created_at DESC LIMIT ?";
 	params.push(filters?.limit ?? 50);
-	const res = await env.DB.prepare(sql).bind(...params).all();
+	const res = await env.DB.prepare(sql)
+		.bind(...params)
+		.all();
 	return (res.results as Record<string, unknown>[]).map(rowToTask);
 }
 
@@ -1006,9 +1013,7 @@ export async function updateAgentTask(
 		vals.push(new Date().toISOString());
 	}
 	vals.push(id, userId);
-	await env.DB.prepare(
-		`UPDATE agent_tasks SET ${sets.join(",")} WHERE id=? AND userId=?`,
-	)
+	await env.DB.prepare(`UPDATE agent_tasks SET ${sets.join(",")} WHERE id=? AND userId=?`)
 		.bind(...vals)
 		.run();
 }
@@ -1018,7 +1023,12 @@ export async function updateAgentTask(
 export async function upsertAgentPresence(
 	userId: string,
 	agentId: string,
-	data: { role?: string; status?: string; capabilities?: string[]; meta?: Record<string, unknown> },
+	data: {
+		role?: string;
+		status?: string;
+		capabilities?: string[];
+		meta?: Record<string, unknown>;
+	},
 	env: Env,
 ): Promise<string> {
 	const existing = await env.DB.prepare(
@@ -1099,7 +1109,9 @@ export async function listAgentRuns(
 	env: Env,
 	role?: string,
 	limit = 20,
-): Promise<Array<{ id: string; agent_role: string; input: string; output: string; created_at: string }>> {
+): Promise<
+	Array<{ id: string; agent_role: string; input: string; output: string; created_at: string }>
+> {
 	let sql = "SELECT id, agent_role, input, output, created_at FROM agent_runs WHERE userId=?";
 	const params: unknown[] = [userId];
 	if (role) {
@@ -1108,6 +1120,8 @@ export async function listAgentRuns(
 	}
 	sql += " ORDER BY created_at DESC LIMIT ?";
 	params.push(limit);
-	const res = await env.DB.prepare(sql).bind(...params).all();
+	const res = await env.DB.prepare(sql)
+		.bind(...params)
+		.all();
 	return res.results as any[];
 }

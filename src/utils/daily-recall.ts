@@ -49,7 +49,10 @@ export type DigestSource = {
 };
 
 export function parseIsoTimestamp(value: string, field: string): string {
-	const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+	const match =
+		/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(
+			value,
+		);
 	if (!match) throw new Error(`${field} must be a valid ISO timestamp`);
 	const [year, month, day, hour, minute, second] = match.slice(1, 7).map(Number);
 	const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
@@ -112,7 +115,8 @@ export function buildDecisionRecord(input: DecisionInput, now: string): Decision
 	const lines = [`Decision: ${decision}`, `Decided: ${decidedAt}`];
 	if (input.project?.trim()) lines.push(`Project: ${input.project.trim()}`);
 	if (input.rationale?.trim()) lines.push(`Rationale: ${input.rationale.trim()}`);
-	if (alternatives.length) lines.push(`Alternatives:\n${alternatives.map((item) => `- ${item}`).join("\n")}`);
+	if (alternatives.length)
+		lines.push(`Alternatives:\n${alternatives.map((item) => `- ${item}`).join("\n")}`);
 	return {
 		text: lines.join("\n"),
 		subject: decision.split(/\s+/).slice(0, 10).join(" "),
@@ -129,15 +133,17 @@ export function parseDecisionMemory(memory: Memory, relevance?: number): Decisio
 	if (!memory.tags.includes("decision")) return null;
 	const decision = field(memory.text, "Decision");
 	if (!decision) return null;
-	const alternativesBlock = memory.text.match(/^Alternatives:\s*\n((?:- .+(?:\n|$))*)/mi)?.[1] ?? "";
+	const alternativesBlock =
+		memory.text.match(/^Alternatives:\s*\n((?:- .+(?:\n|$))*)/im)?.[1] ?? "";
 	return {
 		id: memory.id,
 		decision,
 		...(field(memory.text, "Project") ? { project: field(memory.text, "Project") } : {}),
-		decided_at: parseIsoTimestamp(field(memory.text, "Decided") ?? memory.created_at, "decided_at"),
-		...(field(memory.text, "Rationale")
-			? { rationale: field(memory.text, "Rationale") }
-			: {}),
+		decided_at: parseIsoTimestamp(
+			field(memory.text, "Decided") ?? memory.created_at,
+			"decided_at",
+		),
+		...(field(memory.text, "Rationale") ? { rationale: field(memory.text, "Rationale") } : {}),
 		alternatives: alternativesBlock
 			.split("\n")
 			.map((line) => line.replace(/^- /, "").trim())
@@ -184,7 +190,10 @@ export function rankDigestSources(
 		.map(({ memory, relevance }) => {
 			const createdAt = parseIsoTimestamp(memory.created_at, "created_at");
 			const updatedAt = parseIsoTimestamp(memory.updated_at, "updated_at");
-			const effectiveAt = parseIsoTimestamp(updatedAt > createdAt ? updatedAt : createdAt, "effective_at");
+			const effectiveAt = parseIsoTimestamp(
+				updatedAt > createdAt ? updatedAt : createdAt,
+				"effective_at",
+			);
 			const ageDays = Math.max(0, (nowMs - new Date(effectiveAt).getTime()) / 86_400_000);
 			const recency = 1 / (1 + ageDays / 30);
 			const score = relevance * 0.7 + memory.salience * 0.2 + recency * 0.1;
@@ -199,13 +208,20 @@ export function rankDigestSources(
 				score,
 			};
 		})
-		.sort((a, b) => b.score - a.score || b.source.createdAt.localeCompare(a.source.createdAt) || a.source.id.localeCompare(b.source.id))
+		.sort(
+			(a, b) =>
+				b.score - a.score ||
+				b.source.createdAt.localeCompare(a.source.createdAt) ||
+				a.source.id.localeCompare(b.source.id),
+		)
 		.slice(0, boundedLimit(maxSources))
 		.map(({ source }) => source);
 }
 
 export function renderExtractiveDigest(_topic: string, sources: DigestSource[]): string {
-	return sources.map((source) => `- [${citationId(source.id)}] ${escapeDigestText(source.text)}`).join("\n");
+	return sources
+		.map((source) => `- [${citationId(source.id)}] ${escapeDigestText(source.text)}`)
+		.join("\n");
 }
 
 export function digestHasValidCitations(digest: string, sources: DigestSource[]): boolean {

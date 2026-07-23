@@ -33,7 +33,9 @@ const activeSources = new Map(
 );
 const names = activeFiles.flatMap((file) => {
 	const source = activeSources.get(file);
-	return [...source.matchAll(/server\.(?:tool|registerTool)\(\s*["']([^"']+)["']/g)].map((match) => match[1]);
+	return [...source.matchAll(/server\.(?:tool|registerTool)\(\s*["']([^"']+)["']/g)].map(
+		(match) => match[1],
+	);
 });
 const errors = [];
 for (const name of forbidden) {
@@ -72,5 +74,7 @@ if (errors.length) {
 	process.exit(1);
 }
 console.log(
-	`Tool surface verified: ${names.length} tools; R2 binding ${hasR2Binding ? "ON" : "OFF (optional dual-backend ready)"}`,
+	`Tool surface verified: ${names.length} tools; R2 binding ${
+		hasR2Binding ? "ON" : "OFF (optional dual-backend ready)"
+	}`,
 );

@@ -61,7 +61,10 @@ test("queryMemoryChanges binds user, both timestamps, and bounded limit", async 
 	await queryMemoryChanges("u1", "2026-07-24T00:00:00.000Z", env, 25);
 
 	assert.match(calls[0].sql, /suppressed=0/);
-	assert.match(calls[0].sql, /created_at>=\? OR updated_at>=\?/);
+	assert.match(
+		calls[0].sql,
+		/julianday\(created_at\)>=julianday\(\?\) OR julianday\(updated_at\)>=julianday\(\?\)/,
+	);
 	assert.match(calls[0].sql, /LIMIT \?/);
 	assert.deepEqual(calls[0].values, [
 		"u1",
@@ -69,4 +72,46 @@ test("queryMemoryChanges binds user, both timestamps, and bounded limit", async 
 		"2026-07-24T00:00:00.000Z",
 		25,
 	]);
+});
+
+test("queryMemoryChanges normalizes limits and uses deterministic null-safe timestamps", async () => {
+	const calls: Array<{ sql: string; values: unknown[] }> = [];
+	const env = {
+		DB: {
+			prepare(sql: string) {
+				return {
+					bind(...values: unknown[]) {
+						calls.push({ sql, values });
+						return { all: async () => ({ results: [] }) };
+					},
+				};
+			},
+		},
+	} as unknown as Env;
+	const { queryMemoryChanges } = await import("../src/utils/db");
+
+	for (const [limit, expected] of [
+		[0, 1],
+		[-5, 1],
+		[25.9, 25],
+		[101, 100],
+		[Number.NaN, 100],
+		[Number.POSITIVE_INFINITY, 100],
+		[Number.NEGATIVE_INFINITY, 100],
+	]) {
+		await queryMemoryChanges("u1", "2026-07-24T00:00:00.000Z", env, limit);
+		const boundLimit = calls.at(-1)?.values[3];
+		assert.equal(boundLimit, expected);
+		assert.ok(Number.isInteger(boundLimit));
+		assert.ok((boundLimit as number) >= 1 && (boundLimit as number) <= 100);
+	}
+
+	const sql = calls[0].sql.replace(/\s+/g, " ");
+	assert.match(
+		sql,
+		/julianday\(created_at\)>=julianday\(\?\) OR julianday\(updated_at\)>=julianday\(\?\)/,
+	);
+	assert.match(sql, /WHEN julianday\(updated_at\) IS NULL THEN julianday\(created_at\)/);
+	assert.match(sql, /WHEN julianday\(created_at\) IS NULL THEN julianday\(updated_at\)/);
+	assert.match(sql, /ORDER BY CASE .* END DESC, id ASC/);
 });

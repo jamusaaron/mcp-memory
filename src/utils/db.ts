@@ -192,13 +192,20 @@ export async function queryMemoryChanges(
 	env: Env,
 	limit = 100,
 ): Promise<Memory[]> {
-	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const boundedLimit = Number.isFinite(limit)
+		? Math.min(100, Math.max(1, Math.trunc(limit)))
+		: 100;
 	const res = await env.DB.prepare(
 		`SELECT * FROM memories
 		 WHERE userId=?
 		   AND suppressed=0
-		   AND (created_at>=? OR updated_at>=?)
-		 ORDER BY CASE WHEN updated_at>created_at THEN updated_at ELSE created_at END DESC
+		   AND (julianday(created_at)>=julianday(?) OR julianday(updated_at)>=julianday(?))
+		 ORDER BY CASE
+			WHEN julianday(updated_at) IS NULL THEN julianday(created_at)
+			WHEN julianday(created_at) IS NULL THEN julianday(updated_at)
+			WHEN julianday(updated_at)>julianday(created_at) THEN julianday(updated_at)
+			ELSE julianday(created_at)
+		 END DESC, id ASC
 		 LIMIT ?`,
 	)
 		.bind(userId, since, since, boundedLimit)

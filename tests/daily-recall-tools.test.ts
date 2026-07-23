@@ -101,3 +101,119 @@ test("recallDecisions excludes ordinary and query-irrelevant memories", async ()
 	assert.equal(data.count, 1);
 	assert.deepEqual(data.decisions.map((item) => item.id), ["decision-1"]);
 });
+
+test("recallDecisions never returns suppressed tagged or semantic decisions", async () => {
+	const { stored, deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	await handlers.rememberDecision({ decision: "Ship daily tools", project: "MCP Memory" });
+	const decision = stored[0];
+	const taggedSuppressed = { ...decision, id: "tagged-suppressed", suppressed: true };
+	const semanticSuppressed = { ...decision, id: "semantic-suppressed", suppressed: true };
+	stored.push(semanticSuppressed);
+	deps.queryMemoriesByTags = async () => [decision, taggedSuppressed];
+	deps.searchMemories = async () => [
+		{ id: decision.id, content: decision.text, score: 0.92 },
+		{ id: semanticSuppressed.id, content: semanticSuppressed.text, score: 0.91 },
+	];
+
+	const result = await handlers.recallDecisions({ query: "daily tools", limit: 10 });
+	const data = structured<{ count: number; decisions: Array<{ id: string }> }>(result);
+	assert.equal(data.count, 1);
+	assert.deepEqual(data.decisions.map((item) => item.id), ["decision-1"]);
+});
+
+test("recallDecisions defaults a direct omitted limit to ten", async () => {
+	const { deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	for (let index = 0; index < 11; index += 1) {
+		await handlers.rememberDecision({ decision: `Decision ${index}` });
+	}
+
+	const result = await handlers.recallDecisions({});
+	const data = structured<{ count: number }>(result);
+	assert.equal(data.count, 10);
+});
+
+test("recallDecisions rejects a direct negative limit", async () => {
+	const { deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ limit: -1 });
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /limit must be an integer from 1 to 50/);
+});
+
+test("recallDecisions rejects a direct oversized limit", async () => {
+	const { deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ limit: 51 });
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /limit must be an integer from 1 to 50/);
+});
+
+test("recallDecisions rejects a direct fractional limit", async () => {
+	const { deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ limit: 1.5 });
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /limit must be an integer from 1 to 50/);
+});
+
+test("recallDecisions requires paired dates for direct calls", async () => {
+	const { deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ start_date: "2026-07-24T00:00:00Z" });
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /start_date and end_date must be supplied together/);
+});
+
+test("recallDecisions orders equal-date and equal-score decisions by ascending id", async () => {
+	async function recalledIds(reverse: boolean) {
+		const { stored, deps } = harness();
+		const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+		for (const decision of ["First decision", "Second decision"]) {
+			await handlers.rememberDecision({
+				decision,
+				decided_at: "2026-07-23T00:00:00.000Z",
+			});
+		}
+		const memories = reverse ? [...stored].reverse() : stored;
+		deps.queryMemoriesByTags = async () => memories;
+		deps.searchMemories = async () =>
+			memories.map((memory) => ({ id: memory.id, content: memory.text, score: 0.91 }));
+		const result = await handlers.recallDecisions({ query: "decision", limit: 10 });
+		return structured<{ decisions: Array<{ id: string }> }>(result).decisions.map((item) => item.id);
+	}
+
+	assert.deepEqual(await recalledIds(false), ["decision-1", "decision-2"]);
+	assert.deepEqual(await recalledIds(true), ["decision-1", "decision-2"]);
+});
+
+test("rememberDecision keeps durable metadata when vector storage fails", async () => {
+	const { stored, deps } = harness();
+	deps.storeMemoryVector = async () => {
+		throw new Error("Vectorize unavailable");
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.rememberDecision({ decision: "Store without a vector" });
+	const data = structured<{ embedding_status: string }>(result);
+	assert.equal(data.embedding_status, "pending");
+	assert.equal(stored.length, 1);
+	assert.equal(stored[0].category, "projects");
+	assert.equal(stored[0].layer, "long_embedded");
+	assert.equal(stored[0].embedding_status, "pending");
+});
+
+test("rememberDecision keeps durable metadata when embedding-status update fails", async () => {
+	const { stored, deps } = harness();
+	deps.updateMemory = async () => {
+		throw new Error("Database unavailable");
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.rememberDecision({ decision: "Keep durable metadata" });
+	const data = structured<{ embedding_status: string }>(result);
+	assert.equal(data.embedding_status, "pending");
+	assert.equal(stored.length, 1);
+	assert.equal(stored[0].category, "projects");
+	assert.equal(stored[0].layer, "long_embedded");
+	assert.equal(stored[0].embedding_status, "pending");
+});

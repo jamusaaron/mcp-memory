@@ -117,14 +117,23 @@ export function createDailyRecallHandlers(
 			project?: string;
 			start_date?: string;
 			end_date?: string;
-			limit: number;
+			limit?: number;
 		}) {
 			try {
+				const limit = input.limit ?? 10;
+				if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+					throw new Error("limit must be an integer from 1 to 50");
+				}
+				if (Boolean(input.start_date) !== Boolean(input.end_date)) {
+					throw new Error("start_date and end_date must be supplied together");
+				}
 				const requiredTags = ["decision", ...(input.project ? [projectTag(input.project)] : [])];
 				const tagged = await deps.queryMemoriesByTags(userId, requiredTags, env, 100);
 				let byId = new Map<string, { memory: Memory; relevance?: number }>();
 				for (const memory of tagged) {
-					if (requiredTags.every((tag) => memory.tags.includes(tag))) byId.set(memory.id, { memory });
+					if (!memory.suppressed && requiredTags.every((tag) => memory.tags.includes(tag))) {
+						byId.set(memory.id, { memory });
+					}
 				}
 				if (input.query?.trim()) {
 					const hits = await deps.searchMemories(input.query, userId, env, 100);
@@ -140,7 +149,12 @@ export function createDailyRecallHandlers(
 					for (const hit of hits) {
 						if (byId.has(hit.id)) continue;
 						const memory = await deps.getMemoryById(hit.id, userId, env);
-						if (memory?.tags.includes("decision") && requiredTags.every((tag) => memory.tags.includes(tag))) {
+						if (
+							memory &&
+							!memory.suppressed &&
+							memory.tags.includes("decision") &&
+							requiredTags.every((tag) => memory.tags.includes(tag))
+						) {
 							byId.set(memory.id, { memory, relevance: hit.score });
 						}
 					}
@@ -151,8 +165,13 @@ export function createDailyRecallHandlers(
 					.map(({ memory, relevance }) => parseDecisionMemory(memory, relevance))
 					.filter((value): value is NonNullable<typeof value> => value !== null)
 					.filter((value) => (!start || value.decided_at >= start) && (!end || value.decided_at <= end))
-					.sort((a, b) => b.decided_at.localeCompare(a.decided_at) || (b.relevance ?? 0) - (a.relevance ?? 0))
-					.slice(0, input.limit);
+					.sort(
+						(a, b) =>
+							b.decided_at.localeCompare(a.decided_at) ||
+							(b.relevance ?? 0) - (a.relevance ?? 0) ||
+							a.id.localeCompare(b.id),
+					)
+					.slice(0, limit);
 				const structuredContent = { count: decisions.length, decisions };
 				const text = decisions.length
 					? decisions.map((item) => `- [${item.id}] ${item.decided_at}: ${item.decision}`).join("\n")

@@ -186,6 +186,26 @@ export async function queryMemoriesByDate(
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }
 
+export async function queryMemoryChanges(
+	userId: string,
+	since: string,
+	env: Env,
+	limit = 100,
+): Promise<Memory[]> {
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const res = await env.DB.prepare(
+		`SELECT * FROM memories
+		 WHERE userId=?
+		   AND suppressed=0
+		   AND (created_at>=? OR updated_at>=?)
+		 ORDER BY CASE WHEN updated_at>created_at THEN updated_at ELSE created_at END DESC
+		 LIMIT ?`,
+	)
+		.bind(userId, since, since, boundedLimit)
+		.all();
+	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
 export async function getMemoryIndex(userId: string, env: Env): Promise<MemoryIndex> {
 	const cats = await env.DB.prepare(
 		"SELECT category, COUNT(*) as cnt FROM memories WHERE userId=? AND suppressed=0 GROUP BY category",

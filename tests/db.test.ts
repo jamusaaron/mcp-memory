@@ -41,3 +41,32 @@ test("memory mutations resolve when one row changes", async () => {
 	await updateMemory("existing-id", "user-id", { subject: "test" }, env);
 	await deleteMemory("existing-id", "user-id", env);
 });
+
+test("queryMemoryChanges binds user, both timestamps, and bounded limit", async () => {
+	const calls: Array<{ sql: string; values: unknown[] }> = [];
+	const env = {
+		DB: {
+			prepare(sql: string) {
+				return {
+					bind(...values: unknown[]) {
+						calls.push({ sql, values });
+						return { all: async () => ({ results: [] }) };
+					},
+				};
+			},
+		},
+	} as unknown as Env;
+
+	const { queryMemoryChanges } = await import("../src/utils/db");
+	await queryMemoryChanges("u1", "2026-07-24T00:00:00.000Z", env, 25);
+
+	assert.match(calls[0].sql, /suppressed=0/);
+	assert.match(calls[0].sql, /created_at>=\? OR updated_at>=\?/);
+	assert.match(calls[0].sql, /LIMIT \?/);
+	assert.deepEqual(calls[0].values, [
+		"u1",
+		"2026-07-24T00:00:00.000Z",
+		"2026-07-24T00:00:00.000Z",
+		25,
+	]);
+});

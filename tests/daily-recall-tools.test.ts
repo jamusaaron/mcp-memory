@@ -489,3 +489,43 @@ test("topicDigest deduplicates semantic hits using each ID's highest score", asy
 	assert.equal(hydrations, 1);
 	assert.equal(data.sources[0].relevance, 0.95);
 });
+
+test("topicDigest bounds aggregate model input and aligns the selected source set", async () => {
+	const { deps } = harness();
+	const sources = await Promise.all(
+		Array.from({ length: 30 }, async (_value, index) => {
+			const id = `source-${String(index).padStart(2, "0")}`;
+			return deps.insertMemory(
+				{ id, userId: "u1", text: "x".repeat(4_000), category: "projects" },
+				{} as Env,
+			);
+		}),
+	);
+	const byId = new Map(sources.map((source) => [source.id, source]));
+	const prompts: Array<{ system: string; user: string }> = [];
+	deps.searchMemories = async () =>
+		sources.map((source) => ({ id: source.id, content: source.text, score: 0.9 }));
+	deps.getMemoryById = async (id) => byId.get(id) ?? null;
+	deps.callModel = async (system, user) => {
+		prompts.push({ system, user });
+		return "Uncited generated claim.";
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const first = await handlers.topicDigest({ topic: "daily", days: 14, max_sources: 30, include_decisions: true });
+	const second = await handlers.topicDigest({ topic: "daily", days: 14, max_sources: 30, include_decisions: true });
+	const firstData = structured<{ digest: string; sources: Array<{ id: string; text: string }> }>(first);
+	const secondData = structured<{ sources: Array<{ id: string; text: string }> }>(second);
+	assert.equal(prompts.length, 2);
+	assert.ok(prompts.every(({ system, user }) => system.length + user.length < 24_000));
+	assert.ok(firstData.sources.length > 0 && firstData.sources.length < sources.length);
+	assert.deepEqual(secondData.sources, firstData.sources);
+	assert.ok(firstData.sources.some((source) => source.text.length < 4_000));
+	const labels = firstData.sources.map((source) => `[${encodeURIComponent(source.id)}]`);
+	assert.deepEqual(
+		[...prompts[0].user.matchAll(/"citation":"(\[[^"]+\])"/g)].map((match) => match[1]),
+		labels,
+	);
+	assert.match(first.content[0].text, /extractive fallback/i);
+	assert.ok(first.content[0].text.includes(`Sources: ${labels.join(" ")}`));
+	for (const label of labels) assert.ok(firstData.digest.includes(label));
+});

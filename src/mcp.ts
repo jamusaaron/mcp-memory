@@ -11,6 +11,7 @@ import { registerHealthTools } from "./tools/health";
 import { registerInfraTools } from "./tools/infra";
 import { registerIngestionTools } from "./tools/ingestion";
 import { registerMemoryTools } from "./tools/memory";
+import { registerDailyRecallTools } from "./tools/daily-recall";
 import { registerPeopleTools } from "./tools/people";
 import { registerSessionTools } from "./tools/session";
 import { registerUncertaintyTools } from "./tools/uncertainty";
@@ -33,6 +34,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		}
 
 		registerMemoryTools(this.server, env, userId);
+		registerDailyRecallTools(this.server, env, userId);
 		registerPeopleTools(this.server, env, userId);
 		registerUncertaintyTools(this.server, env, userId);
 		registerSessionTools(this.server, env, userId);

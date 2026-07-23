@@ -14,7 +14,7 @@ function harness() {
 		insertMemory: async (input) => {
 			const memory = {
 				...input,
-				id: `decision-${stored.length + 1}`,
+				id: "id" in input && typeof input.id === "string" ? input.id : `decision-${stored.length + 1}`,
 				subject: input.subject ?? null,
 				tags: input.tags ?? [],
 				triggers: input.triggers ?? [],
@@ -216,4 +216,112 @@ test("rememberDecision keeps durable metadata when embedding-status update fails
 	assert.equal(stored[0].category, "projects");
 	assert.equal(stored[0].layer, "long_embedded");
 	assert.equal(stored[0].embedding_status, "pending");
+});
+
+test("whatChanged reports created and updated counts", async () => {
+	const { deps } = harness();
+	deps.queryMemoryChanges = async () => [
+		{
+			...(await deps.insertMemory({ userId: "u1", text: "Created", category: "projects" }, {} as Env)),
+			id: "created",
+			created_at: "2026-07-24T01:00:00.000Z",
+			updated_at: "2026-07-24T01:00:00.000Z",
+		},
+		{
+			...(await deps.insertMemory({ userId: "u1", text: "Edited", category: "projects" }, {} as Env)),
+			id: "updated",
+			created_at: "2026-07-20T01:00:00.000Z",
+			updated_at: "2026-07-24T02:00:00.000Z",
+		},
+	];
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.whatChanged({ since: "2026-07-24T00:00:00Z", limit: 25 });
+	const data = structured<{
+		counts: { created: number; updated: number };
+		changes: Array<{ id: string }>;
+	}>(result);
+	assert.deepEqual(data.counts, { created: 1, updated: 1 });
+	assert.deepEqual(data.changes.map((item) => item.id), ["updated", "created"]);
+});
+
+test("topicDigest cites selected sources and falls back when AI fails", async () => {
+	const { stored, deps } = harness();
+	const source = await deps.insertMemory(
+		{ id: "source-1", userId: "u1", text: "Added daily tools.", category: "projects" },
+		{} as Env,
+	);
+	source.created_at = "2026-07-24T01:00:00.000Z";
+	source.updated_at = source.created_at;
+	stored[0] = source;
+	deps.searchMemories = async () => [{ id: source.id, content: source.text, score: 0.94 }];
+	deps.getMemoryById = async () => source;
+	deps.callModel = async () => {
+		throw new Error("AI unavailable");
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.topicDigest({
+		topic: "daily tools",
+		days: 14,
+		max_sources: 12,
+		include_decisions: true,
+	});
+	const data = structured<{ digest: string; sources: Array<{ id: string }> }>(result);
+	assert.match(data.digest, /\[source-1\]/);
+	assert.deepEqual(data.sources.map((item) => item.id), ["source-1"]);
+	assert.match(result.content[0].text, /extractive fallback/i);
+});
+
+test("topicDigest bounds vector hits, hydrations, sources, and model context", async () => {
+	const { deps } = harness();
+	const source = await deps.insertMemory(
+		{ id: "source-1", userId: "u1", text: "x".repeat(10_000), category: "projects" },
+		{} as Env,
+	);
+	let requestedHits = 0;
+	let hydrated = 0;
+	let modelContext = "";
+	deps.searchMemories = async (_query, _userId, _env, limit) => {
+		requestedHits = limit;
+		return Array.from({ length: 200 }, () => ({ id: source.id, content: source.text, score: 0.94 }));
+	};
+	deps.getMemoryById = async () => {
+		hydrated += 1;
+		return source;
+	};
+	deps.callModel = async (_system, user) => {
+		modelContext = user;
+		return `[${source.id}] concise`;
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.topicDigest({
+		topic: "daily tools",
+		days: 14,
+		max_sources: 30,
+		include_decisions: true,
+	});
+	const data = structured<{ sources: Array<{ id: string; text: string }> }>(result);
+	assert.equal(requestedHits, 90);
+	assert.ok(hydrated <= 90);
+	assert.equal(data.sources.length, 1);
+	assert.equal(data.sources[0].text.length, 4_000);
+	assert.ok(modelContext.length < 5_000);
+});
+
+test("topicDigest rejects direct oversized source limits before querying", async () => {
+	const { deps } = harness();
+	let queried = false;
+	deps.searchMemories = async () => {
+		queried = true;
+		return [];
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.topicDigest({
+		topic: "daily tools",
+		days: 14,
+		max_sources: 31,
+		include_decisions: true,
+	});
+	assert.equal(result.isError, true);
+	assert.match(result.content[0].text, /max_sources must be an integer from 1 to 30/);
+	assert.equal(queried, false);
 });

@@ -22,6 +22,9 @@ import { llmCallSystem } from "../utils/ai";
 import { toolError, toolStructured } from "../utils/tool-result";
 import { searchMemories, storeMemoryVector } from "../utils/vectorize";
 
+const MAX_DIGEST_TOPIC_CHARS = 1_000;
+const MAX_DIGEST_SOURCE_CHARS = 4_000;
+
 export type DailyRecallDependencies = {
 	now: () => Date;
 	insertMemory: typeof insertMemory;
@@ -181,6 +184,105 @@ export function createDailyRecallHandlers(
 				return toolError(error);
 			}
 		},
+
+		async whatChanged(input: { since: string; limit: number; categories?: string[] }) {
+			try {
+				const since = parseIsoTimestamp(input.since, "since");
+				const memories = await deps.queryMemoryChanges(userId, since, env, input.limit);
+				const changes = classifyMemoryChanges(memories, since, input.categories, input.limit);
+				const counts = {
+					created: changes.filter((item) => item.changeType === "created").length,
+					updated: changes.filter((item) => item.changeType === "updated").length,
+				};
+				const structuredContent = {
+					since,
+					generated_at: deps.now().toISOString(),
+					counts,
+					changes,
+				};
+				const text = changes.length
+					? changes
+							.map((item) => `- ${item.changeType.toUpperCase()} [${item.id}] ${item.changedAt}: ${item.text}`)
+							.join("\n")
+					: `No memory changes since ${since}.`;
+				return toolStructured(text, structuredContent);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
+
+		async topicDigest(input: {
+			topic: string;
+			days: number;
+			max_sources: number;
+			include_decisions: boolean;
+		}) {
+			try {
+				const topic = input.topic.trim();
+				if (!topic) throw new Error("topic must not be empty");
+				if (topic.length > MAX_DIGEST_TOPIC_CHARS) {
+					throw new Error(`topic must be at most ${MAX_DIGEST_TOPIC_CHARS} characters`);
+				}
+				if (!Number.isInteger(input.days) || input.days < 1 || input.days > 365) {
+					throw new Error("days must be an integer from 1 to 365");
+				}
+				if (!Number.isInteger(input.max_sources) || input.max_sources < 1 || input.max_sources > 30) {
+					throw new Error("max_sources must be an integer from 1 to 30");
+				}
+				const now = deps.now();
+				const start = new Date(now.getTime() - input.days * 86_400_000).toISOString();
+				const maxHits = input.max_sources * 3;
+				const hits = (await deps.searchMemories(topic, userId, env, maxHits)).slice(0, maxHits);
+				const candidates = [];
+				const hydratedIds = new Set<string>();
+				for (const hit of hits) {
+					if (hydratedIds.has(hit.id)) continue;
+					hydratedIds.add(hit.id);
+					const memory = await deps.getMemoryById(hit.id, userId, env);
+					if (!memory || memory.suppressed) continue;
+					const effectiveAt = memory.updated_at > memory.created_at ? memory.updated_at : memory.created_at;
+					if (effectiveAt < start) continue;
+					if (!input.include_decisions && memory.tags.includes("decision")) continue;
+					candidates.push({ memory, relevance: hit.score });
+				}
+				const sources = rankDigestSources(candidates, now.toISOString(), input.max_sources).map(
+					(source) => ({ ...source, text: source.text.slice(0, MAX_DIGEST_SOURCE_CHARS) }),
+				);
+				let digest = sources.length ? renderExtractiveDigest(topic, sources) : "";
+				let usedFallback = false;
+				if (sources.length) {
+					const sourceText = sources.map((source) => `[${source.id}] ${source.text}`).join("\n");
+					try {
+						const generated = await deps.callModel(
+							"Summarize only the supplied memory sources. Be concise and factual. Cite every statement with one or more source IDs in square brackets. Do not add outside facts.",
+							`Topic: ${topic}\n\nSources:\n${sourceText}`,
+							env,
+							900,
+						);
+						if (digestHasValidCitations(generated, sources)) digest = generated.trim();
+						else usedFallback = true;
+					} catch {
+						usedFallback = true;
+					}
+				}
+				const structuredContent = {
+					topic,
+					window: { start, end: now.toISOString(), days: input.days },
+					digest: digest || "No recent evidence found for this topic.",
+					sources,
+				};
+				const prefix = usedFallback ? "Topic digest (extractive fallback)" : "Topic digest";
+				const sourceLine = sources.length
+					? `\n\nSources: ${sources.map((source) => `[${source.id}]`).join(" ")}`
+					: "";
+				return toolStructured(
+					`${prefix}\n\n${structuredContent.digest}${sourceLine}`,
+					structuredContent,
+				);
+			} catch (error) {
+				return toolError(error);
+			}
+		},
 	};
 }
 
@@ -192,6 +294,23 @@ const decisionViewSchema = z.object({
 	rationale: z.string().optional(),
 	alternatives: z.array(z.string()),
 	relevance: z.number().optional(),
+});
+
+const memoryChangeSchema = z.object({
+	id: z.string(),
+	changeType: z.enum(["created", "updated"]),
+	changedAt: z.string(),
+	category: z.string(),
+	subject: z.string().optional(),
+	text: z.string(),
+});
+
+const digestSourceSchema = z.object({
+	id: z.string(),
+	createdAt: z.string(),
+	category: z.string(),
+	text: z.string(),
+	relevance: z.number(),
 });
 
 export function registerDailyRecallTools(server: McpServer, env: Env, userId: string) {
@@ -247,5 +366,44 @@ export function registerDailyRecallTools(server: McpServer, env: Env, userId: st
 			}),
 		},
 		handlers.recallDecisions,
+	);
+
+	server.registerTool(
+		"what_changed",
+		{
+			description: "Show active memories created or materially updated since an ISO timestamp.",
+			inputSchema: z.object({
+				since: z.string(),
+				limit: z.number().int().min(1).max(100).default(25),
+				categories: z.array(z.enum(CATEGORIES)).optional(),
+			}),
+			outputSchema: z.object({
+				since: z.string(),
+				generated_at: z.string(),
+				counts: z.object({ created: z.number().int(), updated: z.number().int() }),
+				changes: z.array(memoryChangeSchema),
+			}),
+		},
+		handlers.whatChanged,
+	);
+
+	server.registerTool(
+		"topic_digest",
+		{
+			description: "Summarize recent memories relevant to a topic with supporting memory IDs.",
+			inputSchema: z.object({
+				topic: z.string().trim().min(1),
+				days: z.number().int().min(1).max(365).default(14),
+				max_sources: z.number().int().min(1).max(30).default(12),
+				include_decisions: z.boolean().default(true),
+			}),
+			outputSchema: z.object({
+				topic: z.string(),
+				window: z.object({ start: z.string(), end: z.string(), days: z.number().int() }),
+				digest: z.string(),
+				sources: z.array(digestSourceSchema),
+			}),
+		},
+		handlers.topicDigest,
 	);
 }

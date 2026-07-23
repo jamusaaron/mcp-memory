@@ -3,6 +3,7 @@ import path from "node:path";
 
 const activeFiles = [
 	"src/tools/memory.ts",
+	"src/tools/daily-recall.ts",
 	"src/tools/people.ts",
 	"src/tools/uncertainty.ts",
 	"src/tools/session.ts",
@@ -26,13 +27,13 @@ const forbidden = new Set([
 	"r2_bucket_delete",
 	"r2_buckets_list",
 ]);
-const EXPECTED_TOOLS = 135;
+const EXPECTED_TOOLS = 139;
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );
 const names = activeFiles.flatMap((file) => {
 	const source = activeSources.get(file);
-	return [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map((match) => match[1]);
+	return [...source.matchAll(/server\.(?:tool|registerTool)\(\s*["']([^"']+)["']/g)].map((match) => match[1]);
 });
 const errors = [];
 for (const name of forbidden) {

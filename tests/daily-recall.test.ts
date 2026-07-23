@@ -153,12 +153,60 @@ test("rankDigestSources bounds zero, negative, and fractional source limits", ()
 	assert.deepEqual(rankDigestSources(candidates, "2026-07-24T04:00:00.000Z", 1.9).map((source) => source.id), ["a"]);
 });
 
-test("renderExtractiveDigest safely distinguishes source text brackets from citations", () => {
+test("rankDigestSources canonicalizes timestamps before choosing the effective recency", () => {
+	const ranked = rankDigestSources(
+		[
+			{
+				memory: baseMemory({
+					id: "a",
+					created_at: "2026-07-24T00:00:00.000+10:00",
+					updated_at: "2026-07-23T16:00:00.000Z",
+				}),
+				relevance: 0.9,
+			},
+			{
+				memory: baseMemory({ id: "b", created_at: "2026-07-23T15:00:00.000Z", updated_at: "2026-07-23T15:00:00.000Z" }),
+				relevance: 0.9,
+			},
+		],
+		"2026-07-23T17:00:00.000Z",
+		2,
+	);
+	assert.deepEqual(ranked.map((source) => source.id), ["a", "b"]);
+});
+
+test("rankDigestSources rejects malformed source timestamps deterministically", () => {
+	assert.throws(
+		() => rankDigestSources([{ memory: baseMemory({ created_at: "not-a-timestamp" }), relevance: 0.9 }], "2026-07-24T04:00:00.000Z", 1),
+		/created_at must be a valid ISO timestamp/,
+	);
+	assert.throws(
+		() => rankDigestSources([{ memory: baseMemory({ updated_at: "2026-02-30T00:00:00.000Z" }), relevance: 0.9 }], "2026-07-24T04:00:00.000Z", 1),
+		/updated_at must be a valid ISO timestamp/,
+	);
+});
+
+test("renderExtractiveDigest restores the bracketed ID citation contract", () => {
+	const text = renderExtractiveDigest("MCP memory", [
+		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 },
+	]);
+	assert.equal(text, "- [a] Added daily recall.");
+	assert.equal(digestHasValidCitations("Added daily recall [a].", [{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 }]), true);
+});
+
+test("renderExtractiveDigest escapes source brackets without treating them as citations", () => {
 	const text = renderExtractiveDigest("MCP memory", [
 		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added [context].", relevance: 0.9 },
 	]);
-	assert.equal(text, '- [source:a] Added [context].');
+	assert.equal(text, "- [a] Added \\[context\\].");
 	assert.equal(digestHasValidCitations(text, [{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added [context].", relevance: 0.9 }]), true);
+});
+
+test("renderExtractiveDigest encodes unsafe source IDs consistently", () => {
+	const sources = [{ id: "a [draft]", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 }];
+	const text = renderExtractiveDigest("MCP memory", sources);
+	assert.equal(text, "- [a%20%5Bdraft%5D] Added daily recall.");
+	assert.equal(digestHasValidCitations(text, sources), true);
 });
 
 test("digestHasValidCitations rejects missing and unknown source IDs", () => {
@@ -166,6 +214,6 @@ test("digestHasValidCitations rejects missing and unknown source IDs", () => {
 		{ id: "a", createdAt: "2026-07-24T00:00:00.000Z", category: "projects", text: "Added daily recall.", relevance: 0.9 },
 	];
 	assert.equal(digestHasValidCitations("Added daily recall.", sources), false);
-	assert.equal(digestHasValidCitations("Added daily recall [source:other].", sources), false);
-	assert.equal(digestHasValidCitations("Added daily recall [source:a].", sources), true);
+	assert.equal(digestHasValidCitations("Added daily recall [other].", sources), false);
+	assert.equal(digestHasValidCitations("Added daily recall [a].", sources), true);
 });

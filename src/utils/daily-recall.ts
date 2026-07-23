@@ -91,6 +91,14 @@ function boundedLimit(value: number): number {
 	return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
 }
 
+function citationId(id: string): string {
+	return encodeURIComponent(id);
+}
+
+function escapeDigestText(text: string): string {
+	return text.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
+
 export function buildDecisionRecord(input: DecisionInput, now: string): DecisionRecord {
 	const decidedAt = parseIsoTimestamp(input.decidedAt ?? now, "decided_at");
 	const decision = input.decision.trim();
@@ -174,14 +182,16 @@ export function rankDigestSources(
 	const nowMs = new Date(parseIsoTimestamp(now, "now")).getTime();
 	return candidates
 		.map(({ memory, relevance }) => {
-			const effectiveAt = memory.updated_at > memory.created_at ? memory.updated_at : memory.created_at;
+			const createdAt = parseIsoTimestamp(memory.created_at, "created_at");
+			const updatedAt = parseIsoTimestamp(memory.updated_at, "updated_at");
+			const effectiveAt = parseIsoTimestamp(updatedAt > createdAt ? updatedAt : createdAt, "effective_at");
 			const ageDays = Math.max(0, (nowMs - new Date(effectiveAt).getTime()) / 86_400_000);
 			const recency = 1 / (1 + ageDays / 30);
 			const score = relevance * 0.7 + memory.salience * 0.2 + recency * 0.1;
 			return {
 				source: {
 					id: memory.id,
-					createdAt: memory.created_at,
+					createdAt,
 					category: memory.category,
 					text: memory.text,
 					relevance: Number(relevance.toFixed(4)),
@@ -195,12 +205,12 @@ export function rankDigestSources(
 }
 
 export function renderExtractiveDigest(_topic: string, sources: DigestSource[]): string {
-	return sources.map((source) => `- [source:${source.id}] ${source.text}`).join("\n");
+	return sources.map((source) => `- [${citationId(source.id)}] ${escapeDigestText(source.text)}`).join("\n");
 }
 
 export function digestHasValidCitations(digest: string, sources: DigestSource[]): boolean {
 	if (!digest.trim() || sources.length === 0) return false;
-	const known = new Set(sources.map((source) => source.id));
-	const citations = [...digest.matchAll(/\[source:([^\]\s]+)\]/g)].map((match) => match[1]);
+	const known = new Set(sources.map((source) => citationId(source.id)));
+	const citations = [...digest.matchAll(/(?<!\\)\[([^\]\s]+)\]/g)].map((match) => match[1]);
 	return citations.length > 0 && citations.every((id) => known.has(id));
 }

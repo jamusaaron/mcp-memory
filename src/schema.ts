@@ -1,3 +1,11 @@
+import {
+	type DatabaseInitializationResult,
+	type MigrationQueryBudget,
+	advanceDatabaseInitializationWithBudget,
+	migrationQueryBudget,
+	readStatusWithBudget,
+} from "./migrations";
+
 const MIGRATIONS = [
     `CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -184,19 +192,59 @@ const POST_COLUMN_INDEXES = [
     `CREATE INDEX IF NOT EXISTS idx_memories_text ON memories(userId, text)`,
 ];
 
-export async function initializeDatabase(env: Env): Promise<void> {
-    for (const sql of MIGRATIONS) {
-        await env.DB.prepare(sql).run();
-    }
-    for (const sql of COLUMN_MIGRATIONS) {
-        try {
-            await env.DB.prepare(sql).run();
-        } catch {
-            /* column already exists */
-        }
-    }
-    for (const sql of POST_COLUMN_INDEXES) {
-        await env.DB.prepare(sql).run();
-    }
-    console.log("Database schema initialized.");
+const LEGACY_BASELINE_TABLES = [
+	"memories",
+	"person_profiles",
+	"behavioral_observations",
+	"personality_feedback",
+] as const;
+
+async function legacyBaselineExistsWithBudget(
+	db: MigrationQueryBudget,
+): Promise<boolean> {
+	const names = LEGACY_BASELINE_TABLES.map((table) => `'${table}'`).join(",");
+	const row = await db.first<{ present: number }>(
+		`SELECT COUNT(*) AS present FROM sqlite_master
+		 WHERE type='table' AND name IN (${names})`,
+	);
+	return (row?.present ?? 0) === LEGACY_BASELINE_TABLES.length;
+}
+
+async function legacyBootstrapStatementsWithBudget(
+	db: MigrationQueryBudget,
+	env: Env,
+): Promise<D1PreparedStatement[]> {
+	const statements: D1PreparedStatement[] = MIGRATIONS.map((sql) =>
+		env.DB.prepare(sql),
+	);
+	const columns = await db.all<{ name: string }>(
+		"PRAGMA table_info(memories)",
+	);
+	const present = new Set(columns.results.map((column) => column.name));
+	for (const sql of COLUMN_MIGRATIONS) {
+		const column = sql.match(/ADD COLUMN (\w+)/)?.[1];
+		if (!column || !present.has(column)) {
+			statements.push(env.DB.prepare(sql));
+		}
+	}
+	for (const sql of POST_COLUMN_INDEXES) {
+		statements.push(env.DB.prepare(sql));
+	}
+	return statements;
+}
+
+export async function initializeDatabase(
+	env: Env,
+): Promise<DatabaseInitializationResult> {
+	const db = migrationQueryBudget(env);
+	const status = await readStatusWithBudget(db);
+	if (status.ready) {
+		return { ready: true, changed: false, queryCount: db.used };
+	}
+	if (!(await legacyBaselineExistsWithBudget(db))) {
+		const statements = await legacyBootstrapStatementsWithBudget(db, env);
+		await db.batch(statements);
+		return { ready: false, changed: true, queryCount: db.used };
+	}
+	return advanceDatabaseInitializationWithBudget(db, env, status);
 }

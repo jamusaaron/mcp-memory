@@ -53,7 +53,13 @@ app.use("*", async (c, next) => {
 
 		if (!dbInitialized) {
 			try {
-				await initializeDatabase(c.env);
+				const initialization = await initializeDatabase(c.env);
+				if (!initialization.ready || initialization.changed) {
+					return c.json(
+						{ success: false, error: "Database upgrade in progress" },
+						503,
+					);
+				}
 				dbInitialized = true;
 			} catch (e) {
 				console.error("Failed to initialize database:", e);
@@ -274,7 +280,10 @@ const worker = {
 		ctx.waitUntil(
 			(async () => {
 				try {
-					await initializeDatabase(env);
+					const initialization = await initializeDatabase(env);
+					if (!initialization.ready || initialization.changed) {
+						return;
+					}
 					await runScheduledMaintenance(env);
 				} catch (e) {
 					console.error("Scheduled maintenance failed:", e);

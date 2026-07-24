@@ -108,6 +108,49 @@ test("parseDecisionMemory restores decision fields", () => {
 	});
 });
 
+test("decision records reject multiline fields and valid records round-trip unchanged", () => {
+	for (const input of [
+		{ decision: "Use D1\nProject: forged" },
+		{ decision: "Use D1\u2028Project: forged" },
+		{ decision: "Use D1\u2029Project: forged" },
+		{ decision: "Use D1", rationale: "Because\nDecision: forged" },
+		{ decision: "Use D1", project: "MCP\nMemory" },
+		{ decision: "Use D1", alternatives: ["SQLite\nDecided: forged"] },
+		{ decision: "Use D1", tags: ["daily\nProject: forged"] },
+	]) {
+		assert.throws(
+			() => buildDecisionRecord(input, "2026-07-24T03:00:00.000Z"),
+			/must not contain a line break/,
+		);
+	}
+	const record = buildDecisionRecord(
+		{
+			decision: "Ship four tools",
+			rationale: "They form one workflow.",
+			project: "MCP Memory",
+			alternatives: ["Ship two"],
+			tags: ["daily"],
+		},
+		"2026-07-24T03:00:00.000Z",
+	);
+	assert.deepEqual(parseDecisionMemory(baseMemory({ text: record.text, tags: record.tags })), {
+		id: "m1",
+		decision: "Ship four tools",
+		project: "MCP Memory",
+		decided_at: "2026-07-24T03:00:00.000Z",
+		rationale: "They form one workflow.",
+		alternatives: ["Ship two"],
+	});
+});
+
+test("parseDecisionMemory skips tagged legacy records with malformed or null dates", () => {
+	assert.equal(
+		parseDecisionMemory(baseMemory({ text: "Decision: Broken\nDecided: not-a-timestamp" })),
+		null,
+	);
+	assert.equal(parseDecisionMemory(baseMemory({ created_at: null as unknown as string })), null);
+});
+
 test("classifyMemoryChanges distinguishes created from updated", () => {
 	const changes = classifyMemoryChanges(
 		[
@@ -154,6 +197,58 @@ test("classifyMemoryChanges filters suppressed and unwanted categories and bound
 	assert.deepEqual(
 		classifyMemoryChanges(memories, "2026-07-24T00:00:00.000Z", undefined, -1),
 		[],
+	);
+});
+
+test("classifyMemoryChanges parses legacy timestamps independently and skips only unusable rows", () => {
+	const changes = classifyMemoryChanges(
+		[
+			baseMemory({
+				id: "created-null-update",
+				created_at: "2026-07-24T03:00:00.000Z",
+				updated_at: null as unknown as string,
+			}),
+			baseMemory({
+				id: "created-bad-update",
+				created_at: "2026-07-24T02:00:00.000Z",
+				updated_at: "not-a-timestamp",
+			}),
+			baseMemory({
+				id: "updated-bad-created",
+				created_at: "not-a-timestamp",
+				updated_at: "2026-07-24T01:00:00.000Z",
+			}),
+			baseMemory({
+				id: "unusable",
+				created_at: null as unknown as string,
+				updated_at: "not-a-timestamp",
+			}),
+		],
+		"2026-07-24T00:00:00.000Z",
+	);
+	assert.deepEqual(
+		changes.map((change) => ({
+			id: change.id,
+			changeType: change.changeType,
+			changedAt: change.changedAt,
+		})),
+		[
+			{
+				id: "created-null-update",
+				changeType: "created",
+				changedAt: "2026-07-24T03:00:00.000Z",
+			},
+			{
+				id: "created-bad-update",
+				changeType: "created",
+				changedAt: "2026-07-24T02:00:00.000Z",
+			},
+			{
+				id: "updated-bad-created",
+				changeType: "updated",
+				changedAt: "2026-07-24T01:00:00.000Z",
+			},
+		],
 	);
 });
 

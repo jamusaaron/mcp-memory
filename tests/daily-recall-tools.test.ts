@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { type DailyRecallDependencies, createDailyRecallHandlers } from "../src/tools/daily-recall";
-import type { Memory } from "../src/types";
+import {
+	type DailyRecallDependencies,
+	createDailyRecallHandlers,
+	registerDailyRecallTools,
+} from "../src/tools/daily-recall";
+import { CATEGORIES, type Memory } from "../src/types";
 
 function harness() {
 	const stored: Memory[] = [];
@@ -38,7 +42,7 @@ function harness() {
 			if (memory) Object.assign(memory, updates);
 		},
 		getMemoryById: async (id) => stored.find((memory) => memory.id === id) ?? null,
-		queryMemoriesByTags: async () => stored,
+		queryMemoriesWithAllTags: async () => stored,
 		queryMemoryChanges: async () => stored,
 		searchMemories: async () =>
 			stored.map((memory) => ({ id: memory.id, content: memory.text, score: 0.91 })),
@@ -88,7 +92,7 @@ test("recallDecisions excludes ordinary and query-irrelevant memories", async ()
 		id: "unrelated",
 		text: decision.text.replace("Ship daily tools", "Choose a database"),
 	};
-	deps.queryMemoriesByTags = async () => [decision, ordinary, unrelated];
+	deps.queryMemoriesWithAllTags = async () => [decision, ordinary, unrelated];
 	deps.searchMemories = async () => [{ id: decision.id, content: decision.text, score: 0.92 }];
 	const result = await handlers.recallDecisions({
 		query: "daily tools",
@@ -103,6 +107,166 @@ test("recallDecisions excludes ordinary and query-irrelevant memories", async ()
 	);
 });
 
+test("recallDecisions asks for all decision and project tags before the candidate limit", async () => {
+	const { stored, deps } = harness();
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const olderMatching = await deps.insertMemory(
+		{
+			id: "matching",
+			userId: "u1",
+			text: "Decision: Keep the matching decision\nDecided: 2026-07-20T00:00:00.000Z\nProject: MCP Memory",
+			category: "projects",
+			tags: ["decision", "project:mcp-memory"],
+		},
+		{} as Env,
+	);
+	const newerProjectOnly = Array.from({ length: 100 }, (_, index) => ({
+		...olderMatching,
+		id: `project-only-${index}`,
+		tags: ["project:mcp-memory"],
+		created_at: `2026-07-24T01:${String(index % 60).padStart(2, "0")}:00.000Z`,
+	}));
+	stored.push(...newerProjectOnly);
+	let requestedTags: string[] = [];
+	deps.queryMemoriesWithAllTags = async (_userId, tags) => {
+		requestedTags = tags;
+		return [olderMatching];
+	};
+
+	const result = await handlers.recallDecisions({ project: "MCP Memory", limit: 10 });
+	assert.deepEqual(requestedTags, ["decision", "project:mcp-memory"]);
+	assert.deepEqual(
+		structured<{ decisions: Array<{ id: string }> }>(result).decisions.map((item) => item.id),
+		["matching"],
+	);
+});
+
+test("recallDecisions uses a mutation-safe cursor to find date matches after page one", async () => {
+	const { deps } = harness();
+	const template = await deps.insertMemory(
+		{
+			id: "template",
+			userId: "u1",
+			text: "Decision: Outside range\nDecided: 2026-07-24T00:00:00.000Z",
+			category: "projects",
+			tags: ["decision"],
+		},
+		{} as Env,
+	);
+	const firstPage = Array.from({ length: 100 }, (_, index) => ({
+		...template,
+		id: `outside-${String(index).padStart(3, "0")}`,
+	}));
+	const matching = {
+		...template,
+		id: "matching",
+		text: "Decision: Inside range\nDecided: 2026-07-20T00:00:00.000Z",
+	};
+	const requestedCursors: Array<{ createdAt: string; id: string } | undefined> = [];
+	let removedFirstRow = false;
+	deps.queryMemoriesWithAllTags = async (...args) => {
+		const cursor = (args as unknown[])[4] as { createdAt: string; id: string } | undefined;
+		requestedCursors.push(cursor);
+		if (!cursor) {
+			removedFirstRow = true;
+			return firstPage;
+		}
+		if (removedFirstRow && cursor.id === "outside-099") return [matching];
+		return [];
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({
+		start_date: "2026-07-19T00:00:00Z",
+		end_date: "2026-07-21T00:00:00Z",
+		limit: 10,
+	});
+	assert.deepEqual(requestedCursors, [
+		undefined,
+		{ createdAt: template.created_at, id: "outside-099" },
+	]);
+	assert.deepEqual(
+		structured<{ decisions: Array<{ id: string }> }>(result).decisions.map((item) => item.id),
+		["matching"],
+	);
+});
+
+test("recallDecisions traverses from a full non-null page into null-created legacy decisions", async () => {
+	const { deps } = harness();
+	const template = await deps.insertMemory(
+		{
+			id: "template",
+			userId: "u1",
+			text: "Decision: Recent\nDecided: 2026-07-24T00:00:00.000Z",
+			category: "projects",
+			tags: ["decision"],
+		},
+		{} as Env,
+	);
+	const firstPage = Array.from({ length: 100 }, (_, index) => ({
+		...template,
+		id: `recent-${String(index).padStart(3, "0")}`,
+	}));
+	const legacy = {
+		...template,
+		id: "legacy-null-created",
+		created_at: null as unknown as string,
+		text: "Decision: Legacy match\nDecided: 2026-07-20T00:00:00.000Z",
+	};
+	deps.queryMemoriesWithAllTags = async (...args) => {
+		const cursor = (args as unknown[])[4] as
+			| { createdAt: string | null; id: string }
+			| undefined;
+		return cursor ? [legacy] : firstPage;
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({
+		start_date: "2026-07-19T00:00:00Z",
+		end_date: "2026-07-21T00:00:00Z",
+	});
+	assert.deepEqual(
+		structured<{ decisions: Array<{ id: string }> }>(result).decisions.map((item) => item.id),
+		["legacy-null-created"],
+	);
+});
+
+test("recallDecisions bounds exhaustive scans and reports partial results", async () => {
+	const { deps } = harness();
+	let calls = 0;
+	deps.queryMemoriesWithAllTags = async (...args) => {
+		calls += 1;
+		const cursor = (args as unknown[])[4] as { createdAt: string; id: string } | undefined;
+		const start = cursor ? Number(cursor.id.replace("decision-", "")) + 1 : 0;
+		const count = start >= 500 ? 1 : 100;
+		return Array.from({ length: count }, (_, index) => {
+			const sequence = start + index;
+			return {
+				id: `decision-${sequence}`,
+				userId: "u1",
+				text: `Decision: Decision ${sequence}\nDecided: 2026-07-24T00:00:00.000Z`,
+				category: "projects",
+				tags: ["decision"],
+				triggers: [],
+				linked_people: [],
+				suppressed: false,
+				created_at: "2026-07-24T00:00:00.000Z",
+				updated_at: "2026-07-24T00:00:00.000Z",
+			} as Memory;
+		});
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ limit: 10 });
+	const data = structured<{
+		decisions: Array<{ id: string }>;
+		scanned: number;
+		truncated: boolean;
+	}>(result);
+	assert.equal(calls, 6);
+	assert.equal(data.scanned, 500);
+	assert.equal(data.truncated, true);
+	assert.equal(data.decisions.length, 10);
+	assert.match(result.content[0].text, /partial after scanning 500 candidates/i);
+});
+
 test("recallDecisions never returns suppressed tagged or semantic decisions", async () => {
 	const { stored, deps } = harness();
 	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
@@ -111,7 +275,7 @@ test("recallDecisions never returns suppressed tagged or semantic decisions", as
 	const taggedSuppressed = { ...decision, id: "tagged-suppressed", suppressed: true };
 	const semanticSuppressed = { ...decision, id: "semantic-suppressed", suppressed: true };
 	stored.push(semanticSuppressed);
-	deps.queryMemoriesByTags = async () => [decision, taggedSuppressed];
+	deps.queryMemoriesWithAllTags = async () => [decision, taggedSuppressed];
 	deps.searchMemories = async () => [
 		{ id: decision.id, content: decision.text, score: 0.92 },
 		{ id: semanticSuppressed.id, content: semanticSuppressed.text, score: 0.91 },
@@ -181,7 +345,7 @@ test("recallDecisions orders equal-date and equal-score decisions by ascending i
 			});
 		}
 		const memories = reverse ? [...stored].reverse() : stored;
-		deps.queryMemoriesByTags = async () => memories;
+		deps.queryMemoriesWithAllTags = async () => memories;
 		deps.searchMemories = async () =>
 			memories.map((memory) => ({ id: memory.id, content: memory.text, score: 0.91 }));
 		const result = await handlers.recallDecisions({ query: "decision", limit: 10 });
@@ -256,6 +420,63 @@ test("whatChanged reports created and updated counts", async () => {
 	assert.deepEqual(
 		data.changes.map((item) => item.id),
 		["updated", "created"],
+	);
+});
+
+test("whatChanged forwards categories into the bounded database candidate query", async () => {
+	const { deps } = harness();
+	const requested: { limit?: number; categories?: string[] } = {};
+	const matching = await deps.insertMemory(
+		{ id: "matching", userId: "u1", text: "Project update", category: "projects" },
+		{} as Env,
+	);
+	matching.created_at = "2026-07-24T00:00:00.000Z";
+	matching.updated_at = matching.created_at;
+	deps.queryMemoryChanges = async (_userId, _since, _env, limit, categories) => {
+		requested.limit = limit;
+		requested.categories = categories;
+		return [matching];
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.whatChanged({
+		since: "2026-07-23T00:00:00Z",
+		categories: ["projects", "projects"],
+	});
+	assert.equal(requested.limit, 100);
+	assert.deepEqual(requested.categories, ["projects"]);
+	assert.deepEqual(
+		structured<{ changes: Array<{ id: string }> }>(result).changes.map((item) => item.id),
+		["matching"],
+	);
+});
+
+test("whatChanged returns a requested category beyond 100 newer nonmatching rows", async () => {
+	const { deps } = harness();
+	const matching = await deps.insertMemory(
+		{ id: "matching", userId: "u1", text: "Project update", category: "projects" },
+		{} as Env,
+	);
+	matching.created_at = "2026-07-24T00:00:00.000Z";
+	matching.updated_at = matching.created_at;
+	const newerOther = Array.from({ length: 100 }, (_, index) => ({
+		...matching,
+		id: `other-${index}`,
+		category: "goals" as const,
+		created_at: `2026-07-24T01:${String(index % 60).padStart(2, "0")}:00.000Z`,
+		updated_at: `2026-07-24T01:${String(index % 60).padStart(2, "0")}:00.000Z`,
+	}));
+	deps.queryMemoryChanges = async (_userId, _since, _env, _limit, categories) => {
+		return categories?.includes("projects") ? [matching] : newerOther;
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.whatChanged({
+		since: "2026-07-23T00:00:00Z",
+		categories: ["projects"],
+	});
+	assert.equal(newerOther.length, 100);
+	assert.deepEqual(
+		structured<{ changes: Array<{ id: string }> }>(result).changes.map((item) => item.id),
+		["matching"],
 	);
 });
 
@@ -393,6 +614,10 @@ test("direct daily handlers reject invalid schema values before dependencies", a
 	for (const input of [
 		{ since: "2026-07-24T00:00:00Z", limit: 0 },
 		{ since: "2026-07-24T00:00:00Z", limit: 25, categories: ["invalid"] },
+		{
+			since: "2026-07-24T00:00:00Z",
+			categories: Array.from({ length: CATEGORIES.length + 1 }, () => "projects"),
+		},
 	]) {
 		assert.equal((await handlers.whatChanged(input)).isError, true);
 	}
@@ -409,6 +634,187 @@ test("direct daily handlers reject invalid schema values before dependencies", a
 		assert.equal((await handlers.topicDigest(input)).isError, true);
 	}
 	assert.equal(calls, 0);
+});
+
+test("rememberDecision rejects multiline and oversized direct inputs before dependencies", async () => {
+	const { deps } = harness();
+	let writes = 0;
+	deps.insertMemory = async () => {
+		writes += 1;
+		throw new Error("must not write");
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	for (const input of [
+		{ decision: "Ship\nProject: forged" },
+		{ decision: "Ship\n" },
+		{ decision: "Ship\u2028Project: forged" },
+		{ decision: "Ship\u2029Project: forged" },
+		{ decision: "Ship", rationale: "Because\nDecision: forged" },
+		{ decision: "Ship", project: "MCP\nMemory" },
+		{ decision: "Ship", alternatives: ["Other\nDecided: forged"] },
+		{ decision: "Ship", tags: ["daily\nProject: forged"] },
+		{ decision: "Ship", alternatives: Array.from({ length: 21 }, () => "other") },
+		{ decision: "Ship", tags: [""] },
+	]) {
+		const result = await handlers.rememberDecision(input);
+		assert.equal(result.isError, true);
+	}
+	assert.equal(writes, 0);
+});
+
+test("recallDecisions rejects malformed paired dates before dependencies", async () => {
+	const { deps } = harness();
+	let calls = 0;
+	deps.queryMemoriesWithAllTags = async () => {
+		calls += 1;
+		return [];
+	};
+	deps.searchMemories = async () => {
+		calls += 1;
+		return [];
+	};
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({
+		start_date: "not-a-date",
+		end_date: "also-not-a-date",
+	});
+	assert.equal(result.isError, true);
+	assert.equal(calls, 0);
+});
+
+test("recallDecisions continues past tagged decisions with malformed legacy dates", async () => {
+	const { deps } = harness();
+	const valid = await deps.insertMemory(
+		{
+			id: "valid",
+			userId: "u1",
+			text: "Decision: Valid\nDecided: 2026-07-24T00:00:00.000Z",
+			category: "projects",
+			tags: ["decision"],
+		},
+		{} as Env,
+	);
+	const malformed = {
+		...valid,
+		id: "malformed",
+		text: "Decision: Malformed\nDecided: nope",
+	};
+	deps.queryMemoriesWithAllTags = async () => [malformed, valid];
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.recallDecisions({ limit: 10 });
+	assert.equal(result.isError, undefined);
+	assert.deepEqual(
+		structured<{ decisions: Array<{ id: string }> }>(result).decisions.map((item) => item.id),
+		["valid"],
+	);
+});
+
+test("whatChanged uses each valid persisted timestamp independently", async () => {
+	const { deps } = harness();
+	const valid = await deps.insertMemory(
+		{ id: "valid", userId: "u1", text: "Valid", category: "projects" },
+		{} as Env,
+	);
+	valid.created_at = "2026-07-24T01:00:00.000Z";
+	valid.updated_at = valid.created_at;
+	deps.queryMemoryChanges = async () => [
+		{ ...valid, id: "null", created_at: null as unknown as string },
+		{ ...valid, id: "malformed", updated_at: "nope" },
+		valid,
+	];
+	const handlers = createDailyRecallHandlers("u1", {} as Env, deps);
+	const result = await handlers.whatChanged({ since: "2026-07-24T00:00:00Z" });
+	assert.equal(result.isError, undefined);
+	assert.deepEqual(
+		structured<{ changes: Array<{ id: string; changeType: string }> }>(result).changes.map(
+			(item) => ({ id: item.id, changeType: item.changeType }),
+		),
+		[
+			{ id: "malformed", changeType: "created" },
+			{ id: "null", changeType: "updated" },
+			{ id: "valid", changeType: "created" },
+		],
+	);
+});
+
+test("registerDailyRecallTools has four unique contracts with parsed defaults and valid handler outputs", async () => {
+	type Registration = {
+		name: string;
+		config: {
+			inputSchema: { parse: (input: unknown) => any };
+			outputSchema: { parse: (input: unknown) => unknown };
+		};
+		handler: (input: any) => Promise<any>;
+	};
+	const registrations: Registration[] = [];
+	const registry = {
+		registerTool(
+			name: string,
+			config: Registration["config"],
+			handler: Registration["handler"],
+		) {
+			registrations.push({ name, config, handler });
+		},
+	};
+	const { deps } = harness();
+	registerDailyRecallTools(registry as never, {} as Env, "u1", deps);
+	assert.deepEqual(
+		registrations.map((registration) => registration.name),
+		["remember_decision", "recall_decisions", "what_changed", "topic_digest"],
+	);
+	assert.equal(new Set(registrations.map((registration) => registration.name)).size, 4);
+	const byName = new Map(registrations.map((registration) => [registration.name, registration]));
+	assert.throws(
+		() =>
+			byName
+				.get("remember_decision")
+				?.config.inputSchema.parse({ decision: "Use D1\u2028Project: forged" }),
+		/must not contain a line break/,
+	);
+	assert.throws(
+		() => byName.get("remember_decision")?.config.inputSchema.parse({ decision: "Use D1\n" }),
+		/must not contain a line break/,
+	);
+	assert.throws(
+		() =>
+			byName.get("what_changed")?.config.inputSchema.parse({
+				since: "2026-07-24T00:00:00Z",
+				categories: Array.from({ length: CATEGORIES.length + 1 }, () => "projects"),
+			}),
+		/Array must contain at most/,
+	);
+	assert.deepEqual(byName.get("recall_decisions")?.config.inputSchema.parse({}), { limit: 10 });
+	assert.throws(
+		() =>
+			byName
+				.get("recall_decisions")
+				?.config.inputSchema.parse({ start_date: "2026-07-24T00:00:00Z" }),
+		/start_date and end_date must be supplied together/,
+	);
+	assert.deepEqual(
+		byName.get("what_changed")?.config.inputSchema.parse({ since: "2026-07-24T00:00:00Z" }),
+		{
+			since: "2026-07-24T00:00:00Z",
+			limit: 25,
+		},
+	);
+	assert.deepEqual(byName.get("topic_digest")?.config.inputSchema.parse({ topic: "daily" }), {
+		topic: "daily",
+		days: 14,
+		max_sources: 12,
+		include_decisions: true,
+	});
+	for (const [name, input] of [
+		["remember_decision", { decision: "Ship" }],
+		["recall_decisions", {}],
+		["what_changed", { since: "2026-07-24T00:00:00Z" }],
+		["topic_digest", { topic: "daily" }],
+	] as const) {
+		const registration = byName.get(name);
+		assert.ok(registration);
+		const result = await registration.handler(registration.config.inputSchema.parse(input));
+		registration.config.outputSchema.parse(structured(result));
+	}
 });
 
 test("topicDigest applies direct schema defaults", async () => {

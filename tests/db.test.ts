@@ -74,6 +74,88 @@ test("queryMemoryChanges binds user, both timestamps, and bounded limit", async 
 	]);
 });
 
+test("queryMemoryChanges binds validated categories before its ordered candidate limit", async () => {
+	const calls: Array<{ sql: string; values: unknown[] }> = [];
+	const env = {
+		DB: {
+			prepare(sql: string) {
+				return {
+					bind(...values: unknown[]) {
+						calls.push({ sql, values });
+						return { all: async () => ({ results: [] }) };
+					},
+				};
+			},
+		},
+	} as unknown as Env;
+	const { queryMemoryChanges } = await import("../src/utils/db");
+
+	await queryMemoryChanges("u1", "2026-07-24T00:00:00.000Z", env, 25, [
+		"projects",
+		"projects",
+		"goals",
+	]);
+
+	const sql = calls[0].sql.replace(/\s+/g, " ");
+	assert.match(sql, /AND category IN \(\?, \?\) ORDER BY CASE/);
+	assert.deepEqual(calls[0].values, [
+		"u1",
+		"2026-07-24T00:00:00.000Z",
+		"2026-07-24T00:00:00.000Z",
+		"projects",
+		"goals",
+		25,
+	]);
+});
+
+test("queryMemoriesWithAllTags intersects every tag before ordering and limiting", async () => {
+	const calls: Array<{ sql: string; values: unknown[] }> = [];
+	const env = {
+		DB: {
+			prepare(sql: string) {
+				return {
+					bind(...values: unknown[]) {
+						calls.push({ sql, values });
+						return { all: async () => ({ results: [] }) };
+					},
+				};
+			},
+		},
+	} as unknown as Env;
+	const { queryMemoriesWithAllTags } = await import("../src/utils/db");
+
+	await queryMemoriesWithAllTags("u1", ["decision", "project:mcp-memory"], env, 50, {
+		createdAt: "2026-07-24T00:00:00.000Z",
+		id: "cursor-id",
+	});
+
+	const sql = calls[0].sql.replace(/\s+/g, " ");
+	assert.match(
+		sql,
+		/tags LIKE \? AND tags LIKE \? AND \(created_at < \? OR created_at IS NULL OR \(created_at = \? AND id > \?\)\) ORDER BY created_at DESC, id ASC LIMIT \?/,
+	);
+	assert.deepEqual(calls[0].values, [
+		"u1",
+		'%"decision"%',
+		'%"project:mcp-memory"%',
+		"2026-07-24T00:00:00.000Z",
+		"2026-07-24T00:00:00.000Z",
+		"cursor-id",
+		50,
+	]);
+
+	await queryMemoriesWithAllTags("u1", ["decision"], env, 50, {
+		createdAt: null,
+		id: "null-cursor",
+	});
+	const nullCursorSql = calls[1].sql.replace(/\s+/g, " ");
+	assert.match(
+		nullCursorSql,
+		/tags LIKE \? AND \(created_at IS NULL AND id > \?\) ORDER BY created_at DESC, id ASC LIMIT \?/,
+	);
+	assert.deepEqual(calls[1].values, ["u1", '%"decision"%', "null-cursor", 50]);
+});
+
 test("queryMemoryChanges normalizes limits and uses deterministic null-safe timestamps", async () => {
 	const calls: Array<{ sql: string; values: unknown[] }> = [];
 	const env = {

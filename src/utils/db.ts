@@ -1,19 +1,20 @@
 import { v4 as uuidv4 } from "uuid";
-import type {
-	AgentPresence,
-	AgentTask,
-	AgentTaskStatus,
-	AiNote,
-	BehavioralObservation,
-	Memory,
-	MemoryIndex,
-	PendingUpdate,
-	Person,
-	PersonProfile,
-	PersonalityFeedback,
-	SessionLog,
-	Transcript,
-	Uncertainty,
+import {
+	type AgentPresence,
+	type AgentTask,
+	type AgentTaskStatus,
+	type AiNote,
+	type BehavioralObservation,
+	CATEGORIES,
+	type Memory,
+	type MemoryIndex,
+	type PendingUpdate,
+	type Person,
+	type PersonProfile,
+	type PersonalityFeedback,
+	type SessionLog,
+	type Transcript,
+	type Uncertainty,
 } from "../types";
 
 function parseJsonField<T>(val: unknown, fallback: T): T {
@@ -191,15 +192,25 @@ export async function queryMemoryChanges(
 	since: string,
 	env: Env,
 	limit = 100,
+	categories?: string[],
 ): Promise<Memory[]> {
 	const boundedLimit = Number.isFinite(limit)
 		? Math.min(100, Math.max(1, Math.trunc(limit)))
 		: 100;
+	const uniqueCategories = [...new Set(categories ?? [])];
+	const allowedCategories = new Set<string>(CATEGORIES);
+	if (uniqueCategories.some((category) => !allowedCategories.has(category))) {
+		throw new Error("categories must contain only supported memory categories");
+	}
+	const categoryPredicate = uniqueCategories.length
+		? ` AND category IN (${uniqueCategories.map(() => "?").join(", ")})`
+		: "";
 	const res = await env.DB.prepare(
 		`SELECT * FROM memories
 		 WHERE userId=?
 		   AND suppressed=0
 		   AND (julianday(created_at)>=julianday(?) OR julianday(updated_at)>=julianday(?))
+		   ${categoryPredicate}
 		 ORDER BY CASE
 			WHEN julianday(updated_at) IS NULL THEN julianday(created_at)
 			WHEN julianday(created_at) IS NULL THEN julianday(updated_at)
@@ -208,7 +219,7 @@ export async function queryMemoryChanges(
 		 END DESC, id ASC
 		 LIMIT ?`,
 	)
-		.bind(userId, since, since, boundedLimit)
+		.bind(userId, since, since, ...uniqueCategories, boundedLimit)
 		.all();
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }
@@ -773,6 +784,36 @@ export async function queryMemoriesByTags(
 		`SELECT * FROM memories WHERE userId=? AND suppressed=0 AND (${conditions}) ORDER BY created_at DESC LIMIT ?`,
 	)
 		.bind(...params, limit)
+		.all();
+	return (res.results as Record<string, unknown>[]).map(rowToMemory);
+}
+
+export async function queryMemoriesWithAllTags(
+	userId: string,
+	tags: string[],
+	env: Env,
+	limit = 50,
+	cursor?: { createdAt: string | null; id: string },
+): Promise<Memory[]> {
+	if (tags.length === 0) return [];
+	const boundedLimit = Number.isFinite(limit)
+		? Math.min(100, Math.max(1, Math.trunc(limit)))
+		: 50;
+	const conditions = tags.map(() => "tags LIKE ?").join(" AND ");
+	const params: unknown[] = [userId, ...tags.map((tag) => `%\"${tag}\"%`)];
+	let cursorPredicate = "";
+	if (cursor?.createdAt === null) {
+		cursorPredicate = " AND (created_at IS NULL AND id > ?)";
+		params.push(cursor.id);
+	} else if (cursor) {
+		cursorPredicate =
+			" AND (created_at < ? OR created_at IS NULL OR (created_at = ? AND id > ?))";
+		params.push(cursor.createdAt, cursor.createdAt, cursor.id);
+	}
+	const res = await env.DB.prepare(
+		`SELECT * FROM memories WHERE userId=? AND suppressed=0 AND ${conditions}${cursorPredicate} ORDER BY created_at DESC, id ASC LIMIT ?`,
+	)
+		.bind(...params, boundedLimit)
 		.all();
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }

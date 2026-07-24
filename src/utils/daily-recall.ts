@@ -89,6 +89,22 @@ function cleanTags(tags: string[]): string[] {
 	return [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
 }
 
+function requireSingleLine(value: string, field: string): string {
+	if (typeof value !== "string" || /[\r\n\u2028\u2029]/.test(value)) {
+		throw new Error(`${field} must not contain a line break`);
+	}
+	return value.trim();
+}
+
+function tryParseIsoTimestamp(value: unknown, field: string): string | undefined {
+	if (typeof value !== "string") return undefined;
+	try {
+		return parseIsoTimestamp(value, field);
+	} catch {
+		return undefined;
+	}
+}
+
 function boundedLimit(value: number): number {
 	if (!Number.isFinite(value) || value <= 0) return 0;
 	return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
@@ -104,17 +120,26 @@ function escapeDigestText(text: string): string {
 
 export function buildDecisionRecord(input: DecisionInput, now: string): DecisionRecord {
 	const decidedAt = parseIsoTimestamp(input.decidedAt ?? now, "decided_at");
-	const decision = input.decision.trim();
+	const decision = requireSingleLine(input.decision, "decision");
 	if (!decision) throw new Error("decision must not be empty");
-	const alternatives = (input.alternatives ?? []).map((value) => value.trim()).filter(Boolean);
+	const rationale =
+		input.rationale === undefined ? undefined : requireSingleLine(input.rationale, "rationale");
+	const project =
+		input.project === undefined ? undefined : requireSingleLine(input.project, "project");
+	const alternatives = (input.alternatives ?? [])
+		.map((value) => requireSingleLine(value, "alternatives"))
+		.filter(Boolean);
+	const suppliedTags = (input.tags ?? [])
+		.map((tag) => requireSingleLine(tag, "tags"))
+		.filter(Boolean);
 	const tags = cleanTags([
 		"decision",
-		...(input.project ? [projectTag(input.project)] : []),
-		...(input.tags ?? []),
+		...(project ? [projectTag(project)] : []),
+		...suppliedTags,
 	]);
 	const lines = [`Decision: ${decision}`, `Decided: ${decidedAt}`];
-	if (input.project?.trim()) lines.push(`Project: ${input.project.trim()}`);
-	if (input.rationale?.trim()) lines.push(`Rationale: ${input.rationale.trim()}`);
+	if (project) lines.push(`Project: ${project}`);
+	if (rationale) lines.push(`Rationale: ${rationale}`);
 	if (alternatives.length)
 		lines.push(`Alternatives:\n${alternatives.map((item) => `- ${item}`).join("\n")}`);
 	return {
@@ -130,26 +155,32 @@ function field(text: string, name: string): string | undefined {
 }
 
 export function parseDecisionMemory(memory: Memory, relevance?: number): DecisionView | null {
-	if (!memory.tags.includes("decision")) return null;
+	if (!Array.isArray(memory.tags) || !memory.tags.includes("decision")) return null;
 	const decision = field(memory.text, "Decision");
 	if (!decision) return null;
 	const alternativesBlock =
 		memory.text.match(/^Alternatives:\s*\n((?:- .+(?:\n|$))*)/im)?.[1] ?? "";
-	return {
-		id: memory.id,
-		decision,
-		...(field(memory.text, "Project") ? { project: field(memory.text, "Project") } : {}),
-		decided_at: parseIsoTimestamp(
-			field(memory.text, "Decided") ?? memory.created_at,
-			"decided_at",
-		),
-		...(field(memory.text, "Rationale") ? { rationale: field(memory.text, "Rationale") } : {}),
-		alternatives: alternativesBlock
-			.split("\n")
-			.map((line) => line.replace(/^- /, "").trim())
-			.filter(Boolean),
-		...(relevance === undefined ? {} : { relevance }),
-	};
+	try {
+		return {
+			id: memory.id,
+			decision,
+			...(field(memory.text, "Project") ? { project: field(memory.text, "Project") } : {}),
+			decided_at: parseIsoTimestamp(
+				field(memory.text, "Decided") ?? memory.created_at,
+				"decided_at",
+			),
+			...(field(memory.text, "Rationale")
+				? { rationale: field(memory.text, "Rationale") }
+				: {}),
+			alternatives: alternativesBlock
+				.split("\n")
+				.map((line) => line.replace(/^- /, "").trim())
+				.filter(Boolean),
+			...(relevance === undefined ? {} : { relevance }),
+		};
+	} catch {
+		return null;
+	}
 }
 
 export function classifyMemoryChanges(
@@ -162,20 +193,26 @@ export function classifyMemoryChanges(
 	return memories
 		.filter((memory) => !memory.suppressed)
 		.filter((memory) => !categories?.length || categories.includes(memory.category))
-		.map((memory) => {
-			const createdAt = parseIsoTimestamp(memory.created_at, "created_at");
-			const updatedAt = parseIsoTimestamp(memory.updated_at, "updated_at");
-			const createdSinceThreshold = createdAt >= threshold;
-			return {
-				id: memory.id,
-				changeType: createdSinceThreshold ? ("created" as const) : ("updated" as const),
-				changedAt: createdSinceThreshold ? createdAt : updatedAt,
-				category: memory.category,
-				...(memory.subject ? { subject: memory.subject } : {}),
-				text: memory.text,
-			};
+		.flatMap((memory) => {
+			const createdAt = tryParseIsoTimestamp(memory.created_at, "created_at");
+			const updatedAt = tryParseIsoTimestamp(memory.updated_at, "updated_at");
+			const createdSinceThreshold = createdAt !== undefined && createdAt >= threshold;
+			const updatedSinceThreshold = updatedAt !== undefined && updatedAt >= threshold;
+			if (!createdSinceThreshold && !updatedSinceThreshold) return [];
+			const changeType = createdSinceThreshold ? ("created" as const) : ("updated" as const);
+			const changedAt = createdSinceThreshold ? createdAt : updatedAt;
+			if (changedAt === undefined) return [];
+			return [
+				{
+					id: memory.id,
+					changeType,
+					changedAt,
+					category: memory.category,
+					...(memory.subject ? { subject: memory.subject } : {}),
+					text: memory.text,
+				},
+			];
 		})
-		.filter((change) => change.changedAt >= threshold)
 		.sort((a, b) => b.changedAt.localeCompare(a.changedAt))
 		.slice(0, boundedLimit(limit));
 }

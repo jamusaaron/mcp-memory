@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 
 const activeFiles = [
 	"src/tools/memory.ts",
@@ -31,13 +32,51 @@ const EXPECTED_TOOLS = 139;
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );
-const names = activeFiles.flatMap((file) => {
-	const source = activeSources.get(file);
-	return [...source.matchAll(/server\.(?:tool|registerTool)\(\s*["']([^"']+)["']/g)].map(
-		(match) => match[1],
+
+export function extractRegisteredToolNames(source, fileName = "tools.ts") {
+	const sourceFile = ts.createSourceFile(
+		fileName,
+		source,
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TS,
 	);
-});
+	const names = [];
+	function visit(node) {
+		if (
+			ts.isCallExpression(node) &&
+			ts.isPropertyAccessExpression(node.expression) &&
+			ts.isIdentifier(node.expression.expression) &&
+			node.expression.expression.text === "server" &&
+			(node.expression.name.text === "tool" || node.expression.name.text === "registerTool")
+		) {
+			const name = node.arguments[0];
+			if (name && ts.isStringLiteralLike(name)) names.push(name.text);
+		}
+		ts.forEachChild(node, visit);
+	}
+	visit(sourceFile);
+	return names;
+}
+
+const names = activeFiles.flatMap((file) =>
+	extractRegisteredToolNames(activeSources.get(file), file),
+);
 const errors = [];
+const parserFixture = `
+	// server.tool("commented-out");
+	const decoy = 'server.registerTool("string-literal")';
+	server.tool("fixture-tool");
+	server.registerTool("fixture-register-tool");
+`;
+const fixtureNames = extractRegisteredToolNames(parserFixture, "tool-surface-fixture.ts");
+if (
+	fixtureNames.length !== 2 ||
+	fixtureNames[0] !== "fixture-tool" ||
+	fixtureNames[1] !== "fixture-register-tool"
+) {
+	errors.push(`tool parser self-test failed: ${fixtureNames.join(", ")}`);
+}
 for (const name of forbidden) {
 	if (names.includes(name)) errors.push(`forbidden tool registered: ${name}`);
 }

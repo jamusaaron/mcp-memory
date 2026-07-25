@@ -4,6 +4,11 @@ import {
 	type ProfileFact,
 	type SelfProfileSection,
 } from "../types";
+import {
+	buildArtifactInvalidationStatements,
+	prepareSourceDeletionPlan,
+	purgePendingArtifactCachesForUser,
+} from "./artifact-store";
 import { canonicalJson, containsHardSecret, sha256Hex } from "./artifact-synthesis";
 
 const MAX_ACTIVE_PROFILE_FACTS = 50;
@@ -167,6 +172,18 @@ export async function setConfirmedProfileFact(
 			now,
 		),
 	);
+	// Confirming a canonical self-profile fact invalidates the self-profile
+	// artifact generation in the same batch that supersedes/inserts the fact.
+	statements.push(
+		...buildArtifactInvalidationStatements(
+			env,
+			userId,
+			["self_profile"],
+			"profile_fact_changed",
+			"profile_tool",
+			{ kind: "profile_fact", id },
+		),
+	);
 	await env.DB.batch(statements);
 
 	const created = await env.DB.prepare(
@@ -275,6 +292,19 @@ export async function ensureLegacySelfProfileFacts(
 			else skipped += 1;
 		}
 	}
+	// A one-shot legacy import advances the self-profile generation exactly once;
+	// an idempotent zero-import call performs no invalidation.
+	if (imported > 0) {
+		await env.DB.batch(
+			buildArtifactInvalidationStatements(
+				env,
+				userId,
+				["self_profile"],
+				"profile_fact_changed",
+				"system",
+			),
+		);
+	}
 	return { imported, skipped };
 }
 
@@ -284,14 +314,33 @@ export async function tombstoneProfileFact(
 	_actor: string,
 	env: Env,
 ): Promise<void> {
-	const result = await env.DB.prepare(
+	// Caller-facing not-found is anchored to a tenant-scoped, still-active fact so
+	// wrong-tenant and already-inactive requests report "Profile fact not found"
+	// rather than the deletion-plan's internal "Source not found".
+	const active = await env.DB.prepare(
+		"SELECT id FROM profile_facts WHERE id=? AND userId=? AND status='active'",
+	)
+		.bind(factId, userId)
+		.first();
+	if (!active) {
+		throw new Error("Profile fact not found");
+	}
+	// Explicit forget: null artifact content, remove source links, write hashed-ID
+	// audit events, and queue cache purges before tombstoning the fact itself.
+	const plan = await prepareSourceDeletionPlan(
+		userId,
+		{ kind: "profile_fact", id: factId },
+		"user_requested_forget",
+		env,
+	);
+	const tombstone = env.DB.prepare(
 		`UPDATE profile_facts
 		 SET status='tombstoned',value=NULL,updated_at=?
 		 WHERE id=? AND userId=? AND status='active'`,
-	)
-		.bind(new Date().toISOString(), factId, userId)
-		.run();
-	if (result.meta.changes === 0) {
+	).bind(new Date().toISOString(), factId, userId);
+	const results = await env.DB.batch([...plan.statements, tombstone]);
+	if (results[results.length - 1]?.meta.changes === 0) {
 		throw new Error("Profile fact not found");
 	}
+	await purgePendingArtifactCachesForUser(userId, env);
 }

@@ -16,6 +16,86 @@ import {
 	type Transcript,
 	type Uncertainty,
 } from "../types";
+import {
+	type ArtifactInvalidationReason,
+	artifactKindsForMemory,
+	buildArtifactInvalidationStatements,
+	prepareSourceDeletionPlan,
+	purgePendingArtifactCachesForUser,
+} from "./artifact-store";
+
+// Access-only and embedding bookkeeping never invalidate derived artifacts.
+const NON_INVALIDATING_MEMORY_FIELDS = new Set([
+	"access_count",
+	"last_accessed",
+	"embedding_status",
+]);
+
+function materiallyChangesMemory(updates: Partial<Memory>): boolean {
+	return Object.keys(updates).some(
+		(field) => !NON_INVALIDATING_MEMORY_FIELDS.has(field),
+	);
+}
+
+function memoryReason(updates: Partial<Memory>): ArtifactInvalidationReason {
+	if ("suppressed" in updates) {
+		return updates.suppressed ? "memory_suppressed" : "memory_restored";
+	}
+	if ("last_verified" in updates) return "memory_verified";
+	return "memory_changed";
+}
+
+/**
+ * Build the memory UPDATE statement. `updated_at` is only touched for material
+ * mutations so access-count/last-accessed/embedding-status-only writes preserve
+ * the prior timestamp (and skip artifact invalidation entirely).
+ */
+function memoryUpdateSql(
+	id: string,
+	userId: string,
+	updates: Partial<Memory>,
+	options: { touchUpdatedAt: boolean },
+): { sql: string; values: unknown[] } {
+	const sets: string[] = [];
+	const values: unknown[] = [];
+	for (const [k, v] of Object.entries(updates)) {
+		if (["id", "userId", "created_at"].includes(k)) continue;
+		let val: unknown = v;
+		if (Array.isArray(v)) val = JSON.stringify(v);
+		else if (typeof v === "boolean") val = v ? 1 : 0;
+		sets.push(`${k}=?`);
+		values.push(val);
+	}
+	if (options.touchUpdatedAt) {
+		sets.push("updated_at=?");
+		values.push(new Date().toISOString());
+	}
+	values.push(id, userId);
+	return {
+		sql: `UPDATE memories SET ${sets.join(",")} WHERE id=? AND userId=?`,
+		values,
+	};
+}
+
+/**
+ * Execute a set of statements atomically when the environment exposes D1
+ * `batch()` (production D1 and the SQLite test adapter both do). A minimal test
+ * double without `batch()` falls back to sequential `run()` so legacy CRUD
+ * contracts keep working.
+ */
+async function execStatements(
+	env: Env,
+	statements: D1PreparedStatement[],
+): Promise<D1Result<unknown>[]> {
+	if (typeof env.DB.batch === "function") {
+		return env.DB.batch(statements);
+	}
+	const results: D1Result<unknown>[] = [];
+	for (const statement of statements) {
+		results.push(await statement.run());
+	}
+	return results;
+}
 
 function parseJsonField<T>(val: unknown, fallback: T): T {
 	if (typeof val === "string") {
@@ -48,33 +128,44 @@ export async function insertMemory(
 ): Promise<Memory> {
 	const id = m.id ?? uuidv4();
 	const now = new Date().toISOString();
-	await env.DB.prepare(
+	const insert = env.DB.prepare(
 		`INSERT INTO memories (id,userId,category,layer,subject,text,tags,triggers,confidence,salience,emotion_weight,source_type,linked_people,embedding_status,suppressed,suppression_reason,pinned,access_count,created_at,updated_at)
          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-	)
-		.bind(
-			id,
+	).bind(
+		id,
+		m.userId,
+		m.category ?? "knowledge",
+		m.layer ?? "current",
+		m.subject ?? null,
+		m.text,
+		JSON.stringify(m.tags ?? []),
+		JSON.stringify(m.triggers ?? []),
+		m.confidence ?? 0.8,
+		m.salience ?? 0.5,
+		m.emotion_weight ?? 0.0,
+		m.source_type ?? "stated",
+		JSON.stringify(m.linked_people ?? []),
+		"pending",
+		0,
+		null,
+		m.pinned ? 1 : 0,
+		m.access_count ?? 0,
+		now,
+		now,
+	);
+	// Every material memory insert invalidates both living-summary and
+	// self-profile generations in the same write batch.
+	await execStatements(env, [
+		insert,
+		...buildArtifactInvalidationStatements(
+			env,
 			m.userId,
-			m.category ?? "knowledge",
-			m.layer ?? "current",
-			m.subject ?? null,
-			m.text,
-			JSON.stringify(m.tags ?? []),
-			JSON.stringify(m.triggers ?? []),
-			m.confidence ?? 0.8,
-			m.salience ?? 0.5,
-			m.emotion_weight ?? 0.0,
-			m.source_type ?? "stated",
-			JSON.stringify(m.linked_people ?? []),
-			"pending",
-			0,
-			null,
-			m.pinned ? 1 : 0,
-			m.access_count ?? 0,
-			now,
-			now,
-		)
-		.run();
+			artifactKindsForMemory({ category: m.category ?? "knowledge" }),
+			"memory_created",
+			"memory_tool",
+			{ kind: "memory", id },
+		),
+	]);
 	return getMemoryById(id, m.userId, env) as Promise<Memory>;
 }
 
@@ -91,36 +182,55 @@ export async function updateMemory(
 	updates: Partial<Memory>,
 	env: Env,
 ): Promise<void> {
-	const sets: string[] = [];
-	const vals: unknown[] = [];
-	for (const [k, v] of Object.entries(updates)) {
-		if (["id", "userId", "created_at"].includes(k)) continue;
-		let val: unknown = v;
-		if (Array.isArray(v)) val = JSON.stringify(v);
-		else if (typeof v === "boolean") val = v ? 1 : 0;
-		sets.push(`${k}=?`);
-		vals.push(val);
+	const material = materiallyChangesMemory(updates);
+	const { sql, values } = memoryUpdateSql(id, userId, updates, {
+		touchUpdatedAt: material,
+	});
+	const statements: D1PreparedStatement[] = [env.DB.prepare(sql).bind(...values)];
+	if (material) {
+		statements.push(
+			...buildArtifactInvalidationStatements(
+				env,
+				userId,
+				artifactKindsForMemory({ category: updates.category ?? "knowledge" }),
+				memoryReason(updates),
+				"memory_tool",
+				{ kind: "memory", id },
+			),
+		);
 	}
-	sets.push("updated_at=?");
-	vals.push(new Date().toISOString());
-	vals.push(id, userId);
-	const result = await env.DB.prepare(
-		`UPDATE memories SET ${sets.join(",")} WHERE id=? AND userId=?`,
-	)
-		.bind(...vals)
-		.run();
-	if (result.meta.changes === 0) {
+	const results = await execStatements(env, statements);
+	if (results[0]?.meta.changes === 0) {
 		throw new Error(`Memory ${id} not found`);
 	}
 }
 
 export async function deleteMemory(id: string, userId: string, env: Env): Promise<void> {
-	const result = await env.DB.prepare("DELETE FROM memories WHERE id=? AND userId=?")
-		.bind(id, userId)
-		.run();
-	if (result.meta.changes === 0) {
+	// Minimal test doubles without batch()/first() keep the legacy single-row
+	// delete contract; production D1 and the SQLite adapter run the full cascade.
+	if (typeof env.DB.batch !== "function") {
+		const result = await env.DB.prepare("DELETE FROM memories WHERE id=? AND userId=?")
+			.bind(id, userId)
+			.run();
+		if (result.meta.changes === 0) {
+			throw new Error(`Memory ${id} not found`);
+		}
+		return;
+	}
+	const plan = await prepareSourceDeletionPlan(
+		userId,
+		{ kind: "memory", id },
+		"user_requested_forget",
+		env,
+	);
+	const finalDelete = env.DB.prepare(
+		"DELETE FROM memories WHERE id=? AND userId=?",
+	).bind(id, userId);
+	const results = await env.DB.batch([...plan.statements, finalDelete]);
+	if (results[results.length - 1]?.meta.changes === 0) {
 		throw new Error(`Memory ${id} not found`);
 	}
+	await purgePendingArtifactCachesForUser(userId, env);
 }
 
 export async function queryMemories(
@@ -614,11 +724,20 @@ export async function insertBehavioralObservation(
 	env: Env,
 ): Promise<string> {
 	const id = uuidv4();
-	await env.DB.prepare(
+	const insert = env.DB.prepare(
 		"INSERT INTO behavioral_observations (id,userId,observation_type,content,context) VALUES (?,?,?,?,?)",
-	)
-		.bind(id, userId, type, content, context)
-		.run();
+	).bind(id, userId, type, content, context);
+	await execStatements(env, [
+		insert,
+		...buildArtifactInvalidationStatements(
+			env,
+			userId,
+			["behavioral_profile"],
+			"behavioral_observation_changed",
+			"memory_tool",
+			{ kind: "behavioral_observation", id },
+		),
+	]);
 	return id;
 }
 
@@ -657,20 +776,40 @@ export async function insertPersonalityFeedback(
 	env: Env,
 ): Promise<string> {
 	const id = uuidv4();
-	await env.DB.prepare(
+	const observationId = uuidv4();
+	// Preserve the existing contract of also writing a synthetic tone_feedback
+	// observation, but keep both rows plus a single behavioral_profile
+	// invalidation event in one atomic batch.
+	const toneObservation = `${data.tone ?? ""}/${data.mode ?? ""} in "${
+		data.situation ?? ""
+	}" → ${data.outcome ?? ""} (${data.feedback_score ?? ""})`;
+	const feedbackInsert = env.DB.prepare(
 		"INSERT INTO personality_feedback (id,userId,persona,tone,mode,situation,outcome,feedback_score) VALUES (?,?,?,?,?,?,?,?)",
-	)
-		.bind(
-			id,
+	).bind(
+		id,
+		userId,
+		data.persona ?? "default",
+		data.tone ?? null,
+		data.mode ?? null,
+		data.situation ?? null,
+		data.outcome ?? null,
+		data.feedback_score ?? null,
+	);
+	const observationInsert = env.DB.prepare(
+		"INSERT INTO behavioral_observations (id,userId,observation_type,content,context) VALUES (?,?,?,?,?)",
+	).bind(observationId, userId, "tone_feedback", toneObservation, null);
+	await execStatements(env, [
+		feedbackInsert,
+		observationInsert,
+		...buildArtifactInvalidationStatements(
+			env,
 			userId,
-			data.persona ?? "default",
-			data.tone ?? null,
-			data.mode ?? null,
-			data.situation ?? null,
-			data.outcome ?? null,
-			data.feedback_score ?? null,
-		)
-		.run();
+			["behavioral_profile"],
+			"personality_feedback_added",
+			"memory_tool",
+			{ kind: "personality_feedback", id },
+		),
+	]);
 	return id;
 }
 

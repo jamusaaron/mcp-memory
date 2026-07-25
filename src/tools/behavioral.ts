@@ -190,11 +190,10 @@ export function registerBehavioralTools(server: McpServer, env: Env, userId: str
         },
         async (params) => {
             try {
+                // insertPersonalityFeedback atomically writes both the feedback row
+                // and the synthetic tone_feedback observation with a single
+                // behavioral_profile invalidation event.
                 await insertPersonalityFeedback(userId, params, env);
-                await insertBehavioralObservation(userId, "tone_feedback",
-                    `${params.tone}/${params.mode} in "${params.situation}" → ${params.outcome} (${params.feedback_score})`,
-                    null, env
-                );
 
                 return { content: [{ type: "text", text: `Personality feedback recorded: ${params.tone}/${params.mode} scored ${params.feedback_score}.` }] };
             } catch (error) {

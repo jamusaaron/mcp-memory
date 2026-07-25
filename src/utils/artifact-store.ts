@@ -9,6 +9,7 @@ import type {
 	DerivedArtifactDetail,
 	DerivedArtifactEvent,
 	DerivedArtifactSource,
+	Memory,
 } from "../types";
 import { ARTIFACT_FAILURE_CODES } from "../types";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./artifact-synthesis";
 import {
 	type ArtifactCacheEnvelope,
+	artifactCacheKey,
 	deleteArtifactCache,
 	getArtifactCache,
 	putArtifactCache,
@@ -1246,4 +1248,453 @@ export function createD1ArtifactStore(
 	}
 
 	return store;
+}
+
+// ── Task 6: atomic evidence invalidation and explicit-deletion cascade ──
+
+export type ArtifactInvalidationReason =
+	| "memory_created"
+	| "memory_changed"
+	| "memory_suppressed"
+	| "memory_restored"
+	| "memory_verified"
+	| "memory_promoted"
+	| "memory_pinned"
+	| "memory_unpinned"
+	| "confidence_decayed"
+	| "profile_fact_changed"
+	| "behavioral_observation_changed"
+	| "personality_feedback_added"
+	| "source_deleted";
+
+export type SourceDeletionPlan = {
+	operationId: string;
+	statements: D1PreparedStatement[];
+};
+
+type SqlFragment = {
+	sql: string;
+	values: unknown[];
+};
+
+function ownedSourcePredicate(
+	userId: string,
+	source: { kind: ArtifactSourceKind; id: string },
+): SqlFragment {
+	const sourceByKind: Record<
+		ArtifactSourceKind,
+		{
+			table: string;
+			stateSql: string;
+		}
+	> = {
+		memory: { table: "memories", stateSql: "" },
+		profile_fact: {
+			table: "profile_facts",
+			stateSql: " AND owned.status<>'tombstoned'",
+		},
+		behavioral_observation: {
+			table: "behavioral_observations",
+			stateSql: " AND owned.status<>'tombstoned'",
+		},
+		personality_feedback: { table: "personality_feedback", stateSql: "" },
+	};
+	const fixed = sourceByKind[source.kind];
+	return {
+		sql: `EXISTS (
+			SELECT 1 FROM ${fixed.table} owned
+			WHERE owned.id=? AND owned.userId=?${fixed.stateSql}
+		)`,
+		values: [source.id, userId],
+	};
+}
+
+export function artifactKindsForMemory(
+	_memory: Pick<Memory, "category">,
+): ArtifactKind[] {
+	return ["living_summary", "self_profile"];
+}
+
+export function buildArtifactInvalidationStatements(
+	env: Env,
+	userId: string,
+	kinds: readonly ArtifactKind[],
+	reason: ArtifactInvalidationReason,
+	actor: string,
+	source?: { kind: ArtifactSourceKind; id: string },
+): D1PreparedStatement[] {
+	const uniqueKinds = [...new Set(kinds)];
+	if (uniqueKinds.length === 0) return [];
+	const now = new Date().toISOString();
+	const operationId = crypto.randomUUID();
+	const metadata = JSON.stringify({
+		mutation_reason: reason,
+		...(source ? { source_kind: source.kind } : {}),
+	});
+	const owned = source
+		? ownedSourcePredicate(userId, source)
+		: { sql: "1=1", values: [] };
+	const statements: D1PreparedStatement[] = [];
+	for (const kind of uniqueKinds) {
+		statements.push(
+			env.DB.prepare(
+				`INSERT INTO derived_artifact_evidence_state
+				 (userId,kind,generation,updated_at)
+				 SELECT ?,?,1,?
+				 WHERE ${owned.sql}
+				 ON CONFLICT(userId,kind) DO UPDATE SET
+				   generation=derived_artifact_evidence_state.generation+1,
+				   updated_at=excluded.updated_at`,
+			).bind(userId, kind, now, ...owned.values),
+			env.DB.prepare(
+				`INSERT INTO derived_artifact_events
+				 (id,userId,artifact_id,kind,event_type,reason_code,actor,
+				  source_watermark,metadata_json,created_at)
+				 SELECT ? || ':candidate:' || a.id,a.userId,a.id,a.kind,
+				        'rejected','evidence_changed',?,a.source_watermark,?,?
+				 FROM derived_artifacts a
+				 WHERE ${owned.sql}
+				   AND a.userId=? AND a.kind=? AND a.status='candidate'`,
+			).bind(
+				operationId,
+				actor,
+				metadata,
+				now,
+				...owned.values,
+				userId,
+				kind,
+			),
+			env.DB.prepare(
+				`UPDATE derived_artifacts AS a
+				 SET status='rejected',reviewed_at=?,reviewed_by=?
+				 WHERE ${owned.sql}
+				   AND a.userId=? AND a.kind=? AND a.status='candidate'`,
+			).bind(now, actor, ...owned.values, userId, kind),
+			env.DB.prepare(
+				`INSERT INTO derived_artifact_events
+				 (id,userId,artifact_id,kind,event_type,reason_code,actor,
+				  source_watermark,metadata_json,created_at)
+				 SELECT ? || ':active:' || a.kind,a.userId,a.id,a.kind,'invalidated',?,
+				        ?,a.source_watermark,?,?
+				 FROM derived_artifacts a
+				 WHERE ${owned.sql}
+				   AND a.userId=? AND a.kind=? AND a.status='published'`,
+			).bind(
+				operationId,
+				reason,
+				actor,
+				metadata,
+				now,
+				...owned.values,
+				userId,
+				kind,
+			),
+			env.DB.prepare(
+				`UPDATE derived_artifacts AS a
+				 SET status='stale'
+				 WHERE ${owned.sql}
+				   AND a.userId=? AND a.kind=? AND a.status='published'`,
+			).bind(...owned.values, userId, kind),
+		);
+	}
+	return statements;
+}
+
+async function requireOwnedSource(
+	userId: string,
+	source: { kind: ArtifactSourceKind; id: string },
+	env: Env,
+): Promise<void> {
+	const tableByKind: Record<ArtifactSourceKind, string> = {
+		memory: "memories",
+		profile_fact: "profile_facts",
+		behavioral_observation: "behavioral_observations",
+		personality_feedback: "personality_feedback",
+	};
+	const table = tableByKind[source.kind];
+	const row = await env.DB.prepare(
+		`SELECT id FROM ${table} WHERE id=? AND userId=?`,
+	)
+		.bind(source.id, userId)
+		.first();
+	if (!row) throw new Error("Source not found");
+}
+
+function affectedArtifactPredicate(
+	userId: string,
+	source: { kind: ArtifactSourceKind; id: string },
+): SqlFragment {
+	const owned = ownedSourcePredicate(userId, source);
+	const linked = `EXISTS (
+		SELECT 1 FROM derived_artifact_sources s
+		WHERE s.artifact_id=a.id AND s.userId=?
+		  AND s.source_kind=? AND s.source_id=?
+	)`;
+	let legacy: SqlFragment;
+	if (source.kind === "memory") {
+		legacy = {
+			sql: `a.validation_state='legacy_unverified'
+				AND (
+					a.kind='living_summary'
+					OR (
+						a.kind='self_profile'
+						AND EXISTS (
+							SELECT 1 FROM memories m
+							WHERE m.id=? AND m.userId=?
+							  AND m.category IN ('identity','preferences','likes','goals','rules')
+						)
+					)
+				)`,
+			values: [source.id, userId],
+		};
+	} else if (source.kind === "profile_fact") {
+		legacy = {
+			sql: "a.validation_state='legacy_unverified' AND a.kind='self_profile'",
+			values: [],
+		};
+	} else {
+		legacy = {
+			sql: "a.validation_state='legacy_unverified' AND a.kind='behavioral_profile'",
+			values: [],
+		};
+	}
+	return {
+		sql: `${owned.sql}
+			AND a.userId=? AND a.status<>'tombstoned'
+			AND (${linked} OR (${legacy.sql}))`,
+		values: [
+			...owned.values,
+			userId,
+			userId,
+			source.kind,
+			source.id,
+			...legacy.values,
+		],
+	};
+}
+
+function cachePurgeDelayMs(attemptCount: number): number {
+	const exponent = Math.max(0, Math.trunc(attemptCount));
+	return Math.min(24 * 60 * 60_000, 5 * 60_000 * 2 ** exponent);
+}
+
+export async function purgePendingArtifactCachesForUser(
+	userId: string,
+	env: Env,
+	limit = 100,
+): Promise<{ purged: string[]; failed: string[] }> {
+	const now = new Date();
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const result = await env.DB.prepare(
+		`SELECT userId,kind,artifact_id,operation_id,attempt_count
+		 FROM artifact_cache_purge_queue
+		 WHERE userId=? AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+		 ORDER BY COALESCE(next_attempt_at,''),artifact_id
+		 LIMIT ?`,
+	)
+		.bind(userId, now.toISOString(), boundedLimit)
+		.all<{
+			userId: string;
+			kind: ArtifactKind;
+			artifact_id: string;
+			operation_id: string;
+			attempt_count: number;
+		}>();
+	const purged: string[] = [];
+	const failed: string[] = [];
+	for (const row of result.results) {
+		const key = artifactCacheKey(row.userId, row.kind, row.artifact_id);
+		try {
+			await env.KV.delete(key);
+			const cleared = await env.DB.prepare(
+				`DELETE FROM artifact_cache_purge_queue
+				 WHERE userId=? AND artifact_id=? AND operation_id=?`,
+			)
+				.bind(row.userId, row.artifact_id, row.operation_id)
+				.run();
+			if (cleared.meta.changes === 1) purged.push(key);
+			else failed.push(key);
+		} catch {
+			const nextRetryAt = new Date(
+				now.getTime() + cachePurgeDelayMs(row.attempt_count),
+			).toISOString();
+			try {
+				await env.DB.prepare(
+					`UPDATE artifact_cache_purge_queue
+					 SET attempt_count=attempt_count+1,
+					     next_attempt_at=?,
+					     last_error_code='cache_purge_failed',
+					     updated_at=?
+					 WHERE userId=? AND artifact_id=? AND operation_id=?
+					   AND attempt_count=?`,
+				)
+					.bind(
+						nextRetryAt,
+						now.toISOString(),
+						row.userId,
+						row.artifact_id,
+						row.operation_id,
+						row.attempt_count,
+					)
+					.run();
+			} catch {
+				// The original due row remains durable and eligible for a later retry.
+			}
+			failed.push(key);
+		}
+	}
+	return { purged, failed };
+}
+
+function legacyRetirementStatements(
+	userId: string,
+	source: { kind: ArtifactSourceKind; id: string },
+	operationId: string,
+	now: string,
+	env: Env,
+): D1PreparedStatement[] {
+	const owned = ownedSourcePredicate(userId, source);
+	const targets: Array<{
+		kind: ArtifactKind;
+		extraSql: string;
+		extraValues: unknown[];
+	}> =
+		source.kind === "memory"
+			? [
+					{ kind: "living_summary", extraSql: "", extraValues: [] },
+					{
+						kind: "self_profile",
+						extraSql: ` AND EXISTS (
+						SELECT 1 FROM memories relevant
+						WHERE relevant.id=? AND relevant.userId=?
+						  AND relevant.category IN ('identity','preferences','likes','goals','rules')
+					)`,
+						extraValues: [source.id, userId],
+					},
+				]
+			: source.kind === "profile_fact"
+				? [{ kind: "self_profile", extraSql: "", extraValues: [] }]
+				: [
+						{
+							kind: "behavioral_profile",
+							extraSql: "",
+							extraValues: [],
+						},
+					];
+	return targets.map(({ kind, extraSql, extraValues }) =>
+		env.DB.prepare(
+			`INSERT INTO derived_artifact_legacy_state
+			 (userId,kind,state,operation_id,legacy_sha256,imported_at,retired_at,updated_at)
+			 SELECT ?,?,'retired',?,NULL,NULL,?,?
+			 WHERE ${owned.sql}${extraSql}
+			 ON CONFLICT(userId,kind) DO UPDATE SET
+			  state='retired',
+			  operation_id=excluded.operation_id,
+			  legacy_sha256=NULL,
+			  retired_at=excluded.retired_at,
+			  updated_at=excluded.updated_at`,
+		).bind(
+			userId,
+			kind,
+			operationId,
+			now,
+			now,
+			...owned.values,
+			...extraValues,
+		),
+	);
+}
+
+export async function prepareSourceDeletionPlan(
+	userId: string,
+	source: { kind: ArtifactSourceKind; id: string },
+	reason: string,
+	env: Env,
+): Promise<SourceDeletionPlan> {
+	await requireOwnedSource(userId, source, env);
+	const operationId = crypto.randomUUID();
+	const sourceIdSha256 = await sha256Hex(source.id);
+	const now = new Date().toISOString();
+	const metadata = JSON.stringify({
+		deletion_operation_id: operationId,
+		source_kind: source.kind,
+		source_id_sha256: sourceIdSha256,
+	});
+	const predicate = () => affectedArtifactPredicate(userId, source);
+	const eventWhere = predicate();
+	const queueWhere = predicate();
+	const rebuildWhere = predicate();
+	const updateWhere = predicate();
+	const linkDeleteGuard = ownedSourcePredicate(userId, source);
+	const invalidationKinds: ArtifactKind[] =
+		source.kind === "memory"
+			? ["living_summary", "self_profile"]
+			: source.kind === "profile_fact"
+				? ["self_profile"]
+				: ["behavioral_profile"];
+	return {
+		operationId,
+		statements: [
+			...buildArtifactInvalidationStatements(
+				env,
+				userId,
+				invalidationKinds,
+				"source_deleted",
+				"user",
+				source,
+			),
+			env.DB.prepare(
+				`INSERT INTO derived_artifact_events
+				 (id,userId,artifact_id,kind,event_type,reason_code,actor,
+				  source_watermark,metadata_json,created_at)
+				 SELECT ? || ':' || a.id,a.userId,a.id,a.kind,'tombstoned',?,
+				        'user',a.source_watermark,?,?
+				 FROM derived_artifacts a
+				 WHERE ${eventWhere.sql}`,
+			).bind(operationId, reason, metadata, now, ...eventWhere.values),
+			env.DB.prepare(
+				`INSERT INTO artifact_cache_purge_queue
+				 (userId,kind,artifact_id,operation_id,attempt_count,next_attempt_at,
+				  last_error_code,created_at,updated_at)
+				 SELECT a.userId,a.kind,a.id,?,0,?,NULL,?,?
+				 FROM derived_artifacts a
+				 WHERE ${queueWhere.sql}
+				 ON CONFLICT(userId,artifact_id) DO UPDATE SET
+				   operation_id=excluded.operation_id,
+				   attempt_count=0,
+				   next_attempt_at=excluded.next_attempt_at,
+				   last_error_code=NULL,
+				   updated_at=excluded.updated_at`,
+			).bind(operationId, now, now, now, ...queueWhere.values),
+			...legacyRetirementStatements(userId, source, operationId, now, env),
+			env.DB.prepare(
+				`INSERT INTO derived_artifact_rebuild_state
+				 (userId,kind,retry_count,next_retry_at,last_error_code,
+				  operation_id,updated_at)
+				 SELECT ?,'living_summary',0,?,NULL,?,?
+				 WHERE EXISTS (
+					SELECT 1 FROM derived_artifacts a
+					WHERE ${rebuildWhere.sql}
+					  AND a.kind='living_summary'
+					  AND a.status IN ('published','stale')
+				 )
+				 ON CONFLICT(userId,kind) DO UPDATE SET
+				   retry_count=0,
+				   next_retry_at=excluded.next_retry_at,
+				   last_error_code=NULL,
+				   operation_id=excluded.operation_id,
+				   updated_at=excluded.updated_at`,
+			).bind(userId, now, operationId, now, ...rebuildWhere.values),
+			env.DB.prepare(
+				`UPDATE derived_artifacts AS a
+				 SET status='tombstoned',content_json=NULL,rendered_text=NULL
+				 WHERE ${updateWhere.sql}`,
+			).bind(...updateWhere.values),
+			env.DB.prepare(
+				`DELETE FROM derived_artifact_sources
+				 WHERE userId=? AND source_kind=? AND source_id=?
+				   AND ${linkDeleteGuard.sql}`,
+			).bind(userId, source.kind, source.id, ...linkDeleteGuard.values),
+		],
+	};
 }

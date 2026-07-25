@@ -12,13 +12,14 @@ import {
 	queryMemories,
 	touchMemoryAccessBatch,
 } from "./db";
-import { getLivingSummary } from "./kv";
+import { resolveActiveDerivedArtifact } from "./artifact-service";
 import { readStaticFile } from "./static-context";
 import { rerankMatches, searchMemories } from "./vectorize";
 
 export type AgentContextPack = {
 	summary: string | null;
 	selfProfile: string | null;
+	behavioralProfile?: string | null;
 	contextCurrent: string | null;
 	pinned: Array<{ id: string; text: string; category: string }>;
 	related: Array<{ id: string; text: string; score: number }>;
@@ -26,12 +27,20 @@ export type AgentContextPack = {
 	memoryIds: string[];
 };
 
-/** Avoid circular import issues if getLivingSummarySafe isn't on db — use KV directly. */
-async function livingSummary(userId: string, env: Env): Promise<string | null> {
+export type AgentArtifactDependencies = {
+	resolveActiveDerivedArtifact: typeof resolveActiveDerivedArtifact;
+};
+
+const DEFAULT_AGENT_ARTIFACT_DEPS: AgentArtifactDependencies = {
+	resolveActiveDerivedArtifact,
+};
+
+/** A degraded subsystem must narrow the context pack, not fail the agent run. */
+async function safeRead<T>(read: () => Promise<T>, fallback: T): Promise<T> {
 	try {
-		return await getLivingSummary(userId, env);
+		return await read();
 	} catch {
-		return null;
+		return fallback;
 	}
 }
 
@@ -39,16 +48,38 @@ export async function buildAgentContext(
 	userId: string,
 	query: string,
 	env: Env,
-	opts?: { relatedLimit?: number },
+	opts?: { relatedLimit?: number; artifacts?: AgentArtifactDependencies },
 ): Promise<AgentContextPack> {
 	const relatedLimit = opts?.relatedLimit ?? 12;
-	const [summary, selfProfile, contextCurrent, pinned, highSalience] = await Promise.all([
-		livingSummary(userId, env),
-		readStaticFile(userId, "self_profile", env),
-		readStaticFile(userId, "context_current", env),
-		getPinnedMemories(userId, env, 12),
-		getHighSalienceMemories(userId, env, 0.75, 10),
+	const artifacts = opts?.artifacts ?? DEFAULT_AGENT_ARTIFACT_DEPS;
+	const [
+		livingArtifact,
+		selfArtifact,
+		behavioralArtifact,
+		contextCurrent,
+		pinned,
+		highSalience,
+	] = await Promise.all([
+		safeRead(
+			() => artifacts.resolveActiveDerivedArtifact(userId, "living_summary", env),
+			null,
+		),
+		safeRead(
+			() => artifacts.resolveActiveDerivedArtifact(userId, "self_profile", env),
+			null,
+		),
+		safeRead(
+			() => artifacts.resolveActiveDerivedArtifact(userId, "behavioral_profile", env),
+			null,
+		),
+		safeRead(() => readStaticFile(userId, "context_current", env), null),
+		safeRead(() => getPinnedMemories(userId, env, 12), []),
+		safeRead(() => getHighSalienceMemories(userId, env, 0.75, 10), []),
 	]);
+
+	const summary = livingArtifact?.rendered_text ?? null;
+	const selfProfile = selfArtifact?.rendered_text ?? null;
+	const behavioralProfile = behavioralArtifact?.rendered_text ?? null;
 
 	let related: Array<{ id: string; text: string; score: number }> = [];
 	try {
@@ -76,12 +107,18 @@ export async function buildAgentContext(
 		).slice(0, relatedLimit);
 		related = ranked.map((r) => ({ id: r.id, text: r.content, score: r.score }));
 	} catch {
-		const kw = await fulltextSearchMemories(userId, query, env, relatedLimit);
+		const kw = await safeRead(
+			() => fulltextSearchMemories(userId, query, env, relatedLimit),
+			[],
+		);
 		related = kw.map((m, i) => ({ id: m.id, text: m.text, score: 0.5 - i * 0.01 }));
 	}
 
 	if (related.length === 0) {
-		const recent = await queryMemories(userId, env, { suppressed: false, limit: 8 });
+		const recent = await safeRead(
+			() => queryMemories(userId, env, { suppressed: false, limit: 8 }),
+			[],
+		);
 		related = recent.map((m) => ({ id: m.id, text: m.text, score: 0.4 }));
 	}
 
@@ -92,11 +129,15 @@ export async function buildAgentContext(
 			...highSalience.map((h) => h.id),
 		]),
 	];
-	await touchMemoryAccessBatch(memoryIds.slice(0, 25), userId, env);
+	await safeRead(
+		() => touchMemoryAccessBatch(memoryIds.slice(0, 25), userId, env),
+		undefined,
+	);
 
 	return {
 		summary,
 		selfProfile,
+		behavioralProfile,
 		contextCurrent,
 		pinned: pinned.map((p) => ({ id: p.id, text: p.text, category: p.category })),
 		related,
@@ -113,6 +154,9 @@ function formatContext(ctx: AgentContextPack): string {
 	const parts: string[] = [];
 	if (ctx.summary) parts.push(`## Living summary\n${ctx.summary}`);
 	if (ctx.selfProfile) parts.push(`## Self profile\n${ctx.selfProfile.slice(0, 2000)}`);
+	if (ctx.behavioralProfile) {
+		parts.push(`## Behavioral profile\n${ctx.behavioralProfile.slice(0, 2000)}`);
+	}
 	if (ctx.contextCurrent) parts.push(`## Current context\n${ctx.contextCurrent}`);
 	if (ctx.pinned.length) {
 		parts.push(

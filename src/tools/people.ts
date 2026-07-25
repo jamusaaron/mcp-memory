@@ -1,11 +1,156 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { insertPerson, listPeople, getPerson, getPersonProfiles, upsertPersonProfile, insertPendingUpdate, listPendingUpdates, setPendingUpdateStatus, queryMemories, searchPeopleByName, deletePerson, updatePerson } from "../utils/db";
-import { extractProfileUpdates, generateSummary } from "../utils/ai";
-import { writeStaticFile } from "../utils/static-context";
-import { PROFILE_SECTIONS } from "../types";
+import { extractProfileUpdates } from "../utils/ai";
+import { rebuildDerivedArtifact } from "../utils/artifact-service";
+import {
+    ensureLegacySelfProfileFacts,
+    setConfirmedProfileFact,
+} from "../utils/profile-facts";
+import { toolStructured } from "../utils/tool-result";
+import { artifactToolError } from "./session";
+import { PROFILE_SECTIONS, SELF_PROFILE_SECTIONS } from "../types";
 
-export function registerPeopleTools(server: McpServer, env: Env, userId: string) {
+const claimOutputSchema = z.object({
+    id: z.string(),
+    section: z.string(),
+    text: z.string(),
+    confidence: z.number(),
+    provenance: z.enum(["stated", "observed", "inferred"]),
+    sensitivity: z.enum(["normal", "sensitive"]),
+    citations: z.array(z.object({
+        source_kind: z.enum([
+            "memory",
+            "profile_fact",
+            "behavioral_observation",
+            "personality_feedback",
+        ]),
+        source_id: z.string(),
+    })),
+});
+
+export const rebuildProfileOutputSchema = z.object({
+    artifact_id: z.string(),
+    version: z.number().int().positive(),
+    status: z.literal("candidate"),
+    claims: z.array(claimOutputSchema),
+    validation: z.record(z.unknown()),
+    review_required: z.literal(true),
+});
+
+export const updateProfileOutputSchema = z.object({
+    target: z.enum(["self", "person"]),
+    id: z.string(),
+    section: z.enum(SELF_PROFILE_SECTIONS),
+    field: z.string(),
+    updated: z.literal(true),
+});
+
+const rebuildSelfProfileInputSchema = z.object({});
+
+const updateProfileInputSchema = z.object({
+    person_id: z.string().optional().describe("Person ID (omit to update the user's self-profile)"),
+    section: z.enum(SELF_PROFILE_SECTIONS).describe("Profile section"),
+    field: z.string().describe("Field name (e.g., 'occupation', 'hobby', 'communication_style')"),
+    value: z.string().describe("Field value"),
+});
+
+export type PeopleArtifactDependencies = {
+    rebuildDerivedArtifact: typeof rebuildDerivedArtifact;
+    ensureLegacySelfProfileFacts: typeof ensureLegacySelfProfileFacts;
+    setConfirmedProfileFact: typeof setConfirmedProfileFact;
+    upsertPersonProfile: typeof upsertPersonProfile;
+};
+
+const DEFAULT_PEOPLE_ARTIFACT_DEPS: PeopleArtifactDependencies = {
+    rebuildDerivedArtifact,
+    ensureLegacySelfProfileFacts,
+    setConfirmedProfileFact,
+    upsertPersonProfile,
+};
+
+export function createPeopleArtifactHandlers(
+    userId: string,
+    env: Env,
+    deps: PeopleArtifactDependencies = DEFAULT_PEOPLE_ARTIFACT_DEPS,
+) {
+    return {
+        async rebuildSelfProfile(_input: unknown) {
+            try {
+                const result = await deps.rebuildDerivedArtifact(userId, "self_profile", env);
+                const artifact = result.artifact;
+                return toolStructured(
+                    `Self-profile candidate ${artifact.id} (version ${artifact.version}) built from ${artifact.selected_source_count} of ${artifact.eligible_source_count} eligible sources. It is inactive until reviewed — use review_derived_artifact to approve or reject it.`,
+                    {
+                        artifact_id: artifact.id,
+                        version: artifact.version,
+                        status: "candidate" as const,
+                        claims: artifact.claims,
+                        validation: artifact.validation,
+                        review_required: true as const,
+                    },
+                );
+            } catch (error) {
+                return artifactToolError("Self-profile rebuild", error);
+            }
+        },
+        async updateProfile(input: unknown) {
+            try {
+                const { person_id, section, field, value } =
+                    updateProfileInputSchema.parse(input);
+                if (person_id) {
+                    await deps.upsertPersonProfile(
+                        person_id,
+                        userId,
+                        section,
+                        { [field]: value },
+                        env,
+                    );
+                    return toolStructured(
+                        `Updated ${section}.${field} for person ${person_id}.`,
+                        {
+                            target: "person" as const,
+                            id: person_id,
+                            section,
+                            field,
+                            updated: true as const,
+                        },
+                    );
+                }
+                // Preserve neighbouring legacy self-profile fields before the
+                // canonical fact write takes over the section.
+                await deps.ensureLegacySelfProfileFacts(userId, env);
+                await deps.setConfirmedProfileFact(
+                    userId,
+                    {
+                        section,
+                        field,
+                        value,
+                        verifiedAt: new Date().toISOString(),
+                    },
+                    env,
+                );
+                return toolStructured(`Updated self-profile ${section}.${field}.`, {
+                    target: "self" as const,
+                    id: "self",
+                    section,
+                    field,
+                    updated: true as const,
+                });
+            } catch (error) {
+                return artifactToolError("Profile update", error);
+            }
+        },
+    };
+}
+
+export function registerPeopleTools(
+    server: McpServer,
+    env: Env,
+    userId: string,
+    deps: PeopleArtifactDependencies = DEFAULT_PEOPLE_ARTIFACT_DEPS,
+) {
+    const artifactHandlers = createPeopleArtifactHandlers(userId, env, deps);
     server.tool(
         "add_person",
         "Add a new person to the people tracker. Use this when the user mentions someone important — a friend, colleague, family member, etc. — for the first time. After adding, use update_person_profile or extract_profile_updates_from_text to populate their profile.",
@@ -366,57 +511,25 @@ export function registerPeopleTools(server: McpServer, env: Env, userId: string)
         }
     );
 
-    server.tool(
+    server.registerTool(
         "rebuild_self_profile",
-        "Rebuild the user's self-profile by summarizing all identity-related memories (identity, preferences, likes, goals, rules) and saving it as persistent context.",
-        {},
-        async () => {
-            try {
-                const memories = await queryMemories(userId, env, { limit: 200, suppressed: false });
-                const identityMemories = memories.filter(m =>
-                    ["identity", "preferences", "likes", "goals", "rules"].includes(m.category)
-                );
-
-                if (identityMemories.length === 0) {
-                    return { content: [{ type: "text", text: "No identity-related memories found to build self-profile." }] };
-                }
-
-                const summary = await generateSummary(identityMemories.map(m => ({
-                    text: m.text, category: m.category,
-                })), env);
-
-                await writeStaticFile(userId, "self_profile", summary, env);
-
-                return { content: [{ type: "text", text: `Self-profile rebuilt from ${identityMemories.length} memories and saved.` }] };
-            } catch (error) {
-                return { content: [{ type: "text", text: "Failed to rebuild self-profile: " + String(error) }] };
-            }
-        }
+        {
+            description:
+                "Rebuild the user's self-profile from confirmed profile facts and identity-related memories as a reviewable derived artifact. The result is an inactive candidate with claims and citations — approve it with review_derived_artifact before it enters context.",
+            inputSchema: rebuildSelfProfileInputSchema,
+            outputSchema: rebuildProfileOutputSchema,
+        },
+        artifactHandlers.rebuildSelfProfile,
     );
 
-    server.tool(
+    server.registerTool(
         "update_profile",
-        "Directly set a single profile field for a person or for the user's self-profile. For bulk updates, use update_person_profile or extract_profile_updates_from_text instead.",
         {
-            person_id: z.string().optional().describe("Person ID (omit to update the user's self-profile)"),
-            section: z.enum(PROFILE_SECTIONS).describe("Profile section"),
-            field: z.string().describe("Field name (e.g., 'occupation', 'hobby', 'communication_style')"),
-            value: z.string().describe("Field value"),
+            description:
+                "Directly set a single profile field for a person or for the user's self-profile. Self-profile writes become confirmed canonical facts. For bulk updates, use update_person_profile or extract_profile_updates_from_text instead.",
+            inputSchema: updateProfileInputSchema,
+            outputSchema: updateProfileOutputSchema,
         },
-        async ({ person_id, section, field, value }) => {
-            try {
-                if (person_id) {
-                    await upsertPersonProfile(person_id, userId, section, { [field]: value }, env);
-                    return { content: [{ type: "text", text: `Updated ${section}.${field} for person ${person_id}.` }] };
-                }
-                const selfProfiles = await getPersonProfiles("self", userId, env);
-                const existing = selfProfiles.find(p => p.section === section);
-                const merged = existing ? { ...existing.content, [field]: value } : { [field]: value };
-                await upsertPersonProfile("self", userId, section, merged, env);
-                return { content: [{ type: "text", text: `Updated self-profile ${section}.${field}.` }] };
-            } catch (error) {
-                return { content: [{ type: "text", text: "Failed to update profile: " + String(error) }] };
-            }
-        }
+        artifactHandlers.updateProfile,
     );
 }

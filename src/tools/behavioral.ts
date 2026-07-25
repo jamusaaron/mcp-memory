@@ -1,57 +1,232 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid";
 import { insertBehavioralObservation, getBehavioralObservations, insertPersonalityFeedback, getPersonalityFeedback } from "../utils/db";
-import { getPersonalityCache, putPersonalityCache, getBehavioralCache, putBehavioralCache } from "../utils/kv";
+import { getPersonalityCache, putPersonalityCache } from "../utils/kv";
 import { readStaticFile, writeStaticFile } from "../utils/static-context";
 import { llmCall } from "../utils/ai";
+import {
+    rebuildDerivedArtifact,
+    resolveActiveDerivedArtifact,
+} from "../utils/artifact-service";
+import { buildArtifactInvalidationStatements } from "../utils/artifact-store";
+import { toolStructured } from "../utils/tool-result";
+import { artifactToolError, artifactToolViewSchema, artifactView } from "./session";
+import { ARTIFACT_STATUSES } from "../types";
 
-export function registerBehavioralTools(server: McpServer, env: Env, userId: string) {
-    server.tool(
-        "record_observation",
-        "Record a behavioral observation about the user — communication patterns, corrections, preferences expressed through behavior rather than explicit statements. Observations feed into the behavioral model and help the assistant adapt over time.",
-        {
-            observation_type: z.string().describe("Type of observation: 'communication' (style patterns), 'correction' (user corrected the assistant), 'preference' (implicit preference signal), 'emotional' (mood/feeling), 'tone_feedback' (how a tone landed)"),
-            content: z.string().describe("What was observed"),
-            context: z.string().optional().describe("The situation in which this was observed"),
-        },
-        async ({ observation_type, content, context }) => {
+export const behavioralModelOutputSchema = z.object({
+    available: z.boolean(),
+    rebuilt: z.boolean(),
+    status: z.enum(ARTIFACT_STATUSES).nullable(),
+    artifact: artifactToolViewSchema.nullable(),
+    review_required: z.boolean(),
+});
+
+export const recordObservationOutputSchema = z.object({
+    id: z.string(),
+    observation_type: z.string(),
+    source_type: z.enum(["stated", "observed", "inferred"]),
+    confidence: z.number().min(0).max(1),
+    verified: z.boolean(),
+});
+
+const behavioralModelInputSchema = z.object({
+    rebuild: z.boolean().optional().default(false).describe("Rebuild a reviewable behavioural profile candidate from all stored observations"),
+});
+
+const recordObservationInputSchema = z.object({
+    observation_type: z.string().describe("Type of observation: 'communication' (style patterns), 'correction' (user corrected the assistant), 'preference' (implicit preference signal), 'emotional' (mood/feeling), 'tone_feedback' (how a tone landed)"),
+    content: z.string().describe("What was observed"),
+    context: z.string().optional().describe("The situation in which this was observed"),
+    source_type: z.enum(["stated", "observed", "inferred"])
+        .optional()
+        .default("observed")
+        .describe("Where the observation came from"),
+    confidence: z.number().min(0).max(1).optional().default(0.5).describe("How confident this observation is"),
+    verified: z.boolean().optional().default(false).describe("Whether the user confirmed this observation"),
+});
+
+export type ObservationRecord = {
+    observation_type: string;
+    content: string;
+    context: string | null;
+    source_type: "stated" | "observed" | "inferred";
+    confidence: number;
+    verified: boolean;
+    verified_at: string | null;
+};
+
+/**
+ * Writes the observation row and its behavioural-profile invalidation in a
+ * single batch, matching `insertBehavioralObservation` while also persisting
+ * the provenance columns added by migration v4.
+ */
+async function insertObservationRecord(
+    userId: string,
+    record: ObservationRecord,
+    env: Env,
+): Promise<string> {
+    const id = uuidv4();
+    const statements = [
+        env.DB.prepare(
+            `INSERT INTO behavioral_observations
+             (id,userId,observation_type,content,context,source_type,confidence,verified_at)
+             VALUES (?,?,?,?,?,?,?,?)`,
+        ).bind(
+            id,
+            userId,
+            record.observation_type,
+            record.content,
+            record.context,
+            record.source_type,
+            record.confidence,
+            record.verified_at,
+        ),
+        ...buildArtifactInvalidationStatements(
+            env,
+            userId,
+            ["behavioral_profile"],
+            "behavioral_observation_changed",
+            "memory_tool",
+            { kind: "behavioral_observation", id },
+        ),
+    ];
+    if (typeof env.DB.batch === "function") {
+        await env.DB.batch(statements);
+    } else {
+        for (const statement of statements) await statement.run();
+    }
+    return id;
+}
+
+export type BehavioralArtifactDependencies = {
+    rebuildDerivedArtifact: typeof rebuildDerivedArtifact;
+    resolveActiveDerivedArtifact: typeof resolveActiveDerivedArtifact;
+    insertObservation: typeof insertObservationRecord;
+};
+
+const DEFAULT_BEHAVIORAL_ARTIFACT_DEPS: BehavioralArtifactDependencies = {
+    rebuildDerivedArtifact,
+    resolveActiveDerivedArtifact,
+    insertObservation: insertObservationRecord,
+};
+
+export function createBehavioralArtifactHandlers(
+    userId: string,
+    env: Env,
+    deps: BehavioralArtifactDependencies = DEFAULT_BEHAVIORAL_ARTIFACT_DEPS,
+) {
+    return {
+        async behavioralModel(input: unknown) {
             try {
-                const id = await insertBehavioralObservation(userId, observation_type, content, context ?? null, env);
-                return { content: [{ type: "text", text: `Observation recorded [${id}]: [${observation_type}] ${content}` }] };
+                const { rebuild } = behavioralModelInputSchema.parse(input ?? {});
+                if (rebuild) {
+                    const result = await deps.rebuildDerivedArtifact(
+                        userId,
+                        "behavioral_profile",
+                        env,
+                    );
+                    const artifact = result.artifact;
+                    return toolStructured(
+                        `Behavioural profile candidate ${artifact.id} (version ${artifact.version}) is inactive until reviewed — use review_derived_artifact to approve or reject it.`,
+                        {
+                            available: false,
+                            rebuilt: true,
+                            status: "candidate" as const,
+                            artifact: artifactView(artifact),
+                            review_required: true,
+                        },
+                    );
+                }
+                const active = await deps.resolveActiveDerivedArtifact(
+                    userId,
+                    "behavioral_profile",
+                    env,
+                );
+                if (!active?.rendered_text) {
+                    return toolStructured(
+                        "No approved behavioural profile yet. Use record_observation to gather evidence, then behavioral_model with rebuild=true to build a reviewable candidate.",
+                        {
+                            available: false,
+                            rebuilt: false,
+                            status: null,
+                            artifact: null,
+                            review_required: false,
+                        },
+                    );
+                }
+                return toolStructured(active.rendered_text, {
+                    available: true,
+                    rebuilt: false,
+                    status: active.status,
+                    artifact: artifactView(active),
+                    review_required: false,
+                });
             } catch (error) {
-                return { content: [{ type: "text", text: "Failed to record observation: " + String(error) }] };
+                return artifactToolError("Behavioural model", error);
             }
-        }
+        },
+        async recordObservation(input: unknown) {
+            try {
+                const parsed = recordObservationInputSchema.parse(input);
+                const id = await deps.insertObservation(
+                    userId,
+                    {
+                        observation_type: parsed.observation_type,
+                        content: parsed.content,
+                        context: parsed.context ?? null,
+                        source_type: parsed.source_type,
+                        confidence: parsed.confidence,
+                        verified: parsed.verified,
+                        verified_at: parsed.verified ? new Date().toISOString() : null,
+                    },
+                    env,
+                );
+                return toolStructured(
+                    `Observation recorded [${id}]: [${parsed.observation_type}] ${parsed.content}`,
+                    {
+                        id,
+                        observation_type: parsed.observation_type,
+                        source_type: parsed.source_type,
+                        confidence: parsed.confidence,
+                        verified: parsed.verified,
+                    },
+                );
+            } catch (error) {
+                return artifactToolError("Observation write", error);
+            }
+        },
+    };
+}
+
+export function registerBehavioralTools(
+    server: McpServer,
+    env: Env,
+    userId: string,
+    deps: BehavioralArtifactDependencies = DEFAULT_BEHAVIORAL_ARTIFACT_DEPS,
+) {
+    const artifactHandlers = createBehavioralArtifactHandlers(userId, env, deps);
+
+    server.registerTool(
+        "record_observation",
+        {
+            description:
+                "Record a behavioral observation about the user — communication patterns, corrections, preferences expressed through behavior rather than explicit statements. Observations feed into the behavioural profile artifact and help the assistant adapt over time.",
+            inputSchema: recordObservationInputSchema,
+            outputSchema: recordObservationOutputSchema,
+        },
+        artifactHandlers.recordObservation,
     );
 
-    server.tool(
+    server.registerTool(
         "behavioral_model",
-        "Retrieve or rebuild the behavioral model — an AI-generated summary of the user's communication patterns, correction tendencies, and preference signals. Cached in KV for fast retrieval. Set rebuild=true to regenerate from all observations.",
-        { rebuild: z.boolean().optional().default(false).describe("Force rebuild from all stored observations") },
-        async ({ rebuild }) => {
-            try {
-                if (!rebuild) {
-                    const cached = await getBehavioralCache(userId, env);
-                    if (cached) return { content: [{ type: "text", text: cached }] };
-                }
-
-                const observations = await getBehavioralObservations(userId, env, undefined, 100);
-                if (observations.length === 0) {
-                    return { content: [{ type: "text", text: "No behavioral observations recorded yet. Use record_observation to start building the model." }] };
-                }
-
-                const items = observations.map(o => `[${o.observation_type}] ${o.content}`).join("\n");
-                const model = await llmCall(
-                    `Build a behavioral model from these observations about a user's communication patterns. Organize into: communication style, correction patterns, preference signals, and behavioral tendencies.\n\n${items}`,
-                    env
-                );
-
-                await putBehavioralCache(userId, model, env);
-                return { content: [{ type: "text", text: model }] };
-            } catch (error) {
-                return { content: [{ type: "text", text: "Failed to get behavioral model: " + String(error) }] };
-            }
-        }
+        {
+            description:
+                "Retrieve the approved behavioural profile — a citation-backed summary of the user's communication patterns, correction tendencies, and preference signals. Set rebuild=true to build a reviewable candidate from all stored observations; candidates stay out of context until approved.",
+            inputSchema: behavioralModelInputSchema,
+            outputSchema: behavioralModelOutputSchema,
+        },
+        artifactHandlers.behavioralModel,
     );
 
     server.tool(

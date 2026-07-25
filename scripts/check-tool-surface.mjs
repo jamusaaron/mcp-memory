@@ -11,6 +11,7 @@ const activeFiles = [
 	"src/tools/context-docs.ts",
 	"src/tools/blobs.ts",
 	"src/tools/behavioral.ts",
+	"src/tools/derived-artifacts.ts",
 	"src/tools/ingestion.ts",
 	"src/tools/ai-agents.ts",
 	"src/tools/agent-orchestrator.ts",
@@ -28,7 +29,7 @@ const forbidden = new Set([
 	"r2_bucket_delete",
 	"r2_buckets_list",
 ]);
-const EXPECTED_TOOLS = 139;
+const EXPECTED_TOOLS = 143;
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );

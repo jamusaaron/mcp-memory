@@ -8,6 +8,7 @@ import { registerBehavioralTools } from "./tools/behavioral";
 import { registerBlobTools } from "./tools/blobs";
 import { registerContextDocTools } from "./tools/context-docs";
 import { registerDailyRecallTools } from "./tools/daily-recall";
+import { registerDerivedArtifactTools } from "./tools/derived-artifacts";
 import { registerHealthTools } from "./tools/health";
 import { registerInfraTools } from "./tools/infra";
 import { registerIngestionTools } from "./tools/ingestion";
@@ -41,6 +42,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		registerContextDocTools(this.server, env, userId);
 		registerBlobTools(this.server, env, userId);
 		registerBehavioralTools(this.server, env, userId);
+		registerDerivedArtifactTools(this.server, env, userId);
 		registerIngestionTools(this.server, env, userId);
 		registerAiAgentTools(this.server, env, userId);
 		registerAgentOrchestratorTools(this.server, env, userId);

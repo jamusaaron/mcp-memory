@@ -3,10 +3,39 @@ import test from "node:test";
 
 import {
 	PROMPT_POLICY,
+	buildPrompt,
+	evaluatePrompt,
+	improvePrompt,
 	missingSections,
 	parsePromptEvaluation,
 	policyForTarget,
+	type PromptRuntimeDependencies,
 } from "../src/utils/prompt-engineering";
+
+function runtimeHarness(outputs: string[]) {
+	const calls: string[] = [];
+	const logged: Array<{ role: string; memoryIds: string[] }> = [];
+	const deps: PromptRuntimeDependencies = {
+		buildContext: async () => ({
+			summary: "Jamie prefers Australian English.",
+			selfProfile: null,
+			contextCurrent: null,
+			pinned: [{ id: "m1", text: "Use Australian English", category: "preferences" }],
+			related: [],
+			highSalience: [],
+			memoryIds: ["m1"],
+		}),
+		callModel: async (_system, user) => {
+			calls.push(user);
+			return outputs.shift() ?? "";
+		},
+		logRun: async (_userId, role, _input, _output, memoryIds) => {
+			logged.push({ role, memoryIds });
+			return "run-1";
+		},
+	};
+	return { deps, calls, logged };
+}
 
 test("prompt policy encodes current durable guidance", () => {
 	assert.match(PROMPT_POLICY, /native structured output/i);
@@ -113,4 +142,95 @@ test("evaluation parser rejects non-string required list entries", () => {
 			new RegExp(`${field}.*array of strings`, "i"),
 		);
 	}
+});
+
+test("prompt build uses memory and logs provenance", async () => {
+	const { deps, calls, logged } = runtimeHarness([
+		"# Prompt\nWrite it.\n# Configuration\nNone.\n# Assumptions\nUses m1.\n# Quality check\nPass.",
+	]);
+	const result = await buildPrompt(
+		"user",
+		{
+			objective: "Draft a note",
+			target: { tool: "Claude" },
+			useMemory: true,
+		},
+		{} as Env,
+		deps,
+	);
+	assert.deepEqual(result.memoryIds, ["m1"]);
+	assert.match(calls[0] ?? "", /Use Australian English/);
+	assert.deepEqual(logged, [{ role: "prompt", memoryIds: ["m1"] }]);
+});
+
+test("prompt build opt-out avoids memory retrieval", async () => {
+	let contextCalls = 0;
+	const { deps } = runtimeHarness([
+		"# Prompt\nDo it.\n# Configuration\nNone.\n# Assumptions\nNone.\n# Quality check\nPass.",
+	]);
+	deps.buildContext = async () => {
+		contextCalls += 1;
+		throw new Error("must not run");
+	};
+	await buildPrompt(
+		"user",
+		{
+			objective: "Do it",
+			target: { tool: "Generic chat" },
+			useMemory: false,
+		},
+		{} as Env,
+		deps,
+	);
+	assert.equal(contextCalls, 0);
+});
+
+test("malformed build output receives exactly one repair call", async () => {
+	const { deps, calls } = runtimeHarness([
+		"# Prompt\nIncomplete",
+		"# Prompt\nFixed.\n# Configuration\nNone.\n# Assumptions\nNone.\n# Quality check\nPass.",
+	]);
+	await buildPrompt(
+		"user",
+		{
+			objective: "Do it",
+			target: { tool: "Claude" },
+			useMemory: false,
+		},
+		{} as Env,
+		deps,
+	);
+	assert.equal(calls.length, 2);
+});
+
+test("evaluation repairs invalid scores once", async () => {
+	const valid = JSON.stringify({
+		scores: {
+			clarity: 80,
+			grounding: 80,
+			scope: 80,
+			output_contract: 80,
+			tool_fit: 80,
+			token_efficiency: 80,
+			safety: 80,
+		},
+		strengths: [],
+		risks: [],
+		recommended_changes: [],
+		verdict: "ready",
+	});
+	const { deps, calls } = runtimeHarness([
+		JSON.stringify({ scores: { clarity: 101 }, verdict: "ready" }),
+		valid,
+	]);
+	const result = await evaluatePrompt(
+		"user",
+		"Do it",
+		{ tool: "Claude" },
+		undefined,
+		{} as Env,
+		deps,
+	);
+	assert.equal(result.evaluation.verdict, "ready");
+	assert.equal(calls.length, 2);
 });

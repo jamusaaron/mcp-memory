@@ -1,12 +1,71 @@
 export const TEXT_GENERATION_MODEL = "@cf/zai-org/glm-4.7-flash";
 const TEXT_GENERATION_MODEL_ID = TEXT_GENERATION_MODEL as keyof AiModels;
 
+type TextGenerationResult = {
+    response?: unknown;
+    choices?: Array<{
+        message?: { content?: unknown };
+        text?: unknown;
+    }>;
+    output_text?: unknown;
+};
+
+type TextGenerationInput = {
+    messages: Array<{ role: "system" | "user"; content: string }>;
+    chat_template_kwargs: { enable_thinking: false };
+    max_tokens: number;
+};
+
+async function runTextGeneration(env: Env, input: TextGenerationInput): Promise<unknown> {
+    // The generated binding types predate GLM's chat_template_kwargs option.
+    return env.AI.run(
+        TEXT_GENERATION_MODEL_ID,
+        input as unknown as AiModels[keyof AiModels]["inputs"],
+    );
+}
+
+function extractGeneratedText(result: unknown): string {
+    if (!result || typeof result !== "object") return "";
+
+    const output = result as TextGenerationResult;
+    if (typeof output.response === "string") return output.response;
+
+    const messageContent = output.choices?.[0]?.message?.content;
+    if (typeof messageContent === "string") return messageContent;
+    if (Array.isArray(messageContent)) {
+        return messageContent
+            .map((part) => {
+                if (typeof part === "string") return part;
+                if (part && typeof part === "object" && "text" in part) {
+                    const text = (part as { text?: unknown }).text;
+                    return typeof text === "string" ? text : "";
+                }
+                return "";
+            })
+            .join("");
+    }
+
+    const choiceText = output.choices?.[0]?.text;
+    if (typeof choiceText === "string") return choiceText;
+    if (typeof output.output_text === "string") return output.output_text;
+    return "";
+}
+
+function requireGeneratedText(result: unknown): string {
+    const text = extractGeneratedText(result);
+    if (!text.trim()) {
+        throw new Error("Workers AI returned no generated text");
+    }
+    return text;
+}
+
 export async function llmCall(prompt: string, env: Env, maxTokens = 1024): Promise<string> {
-    const result = await env.AI.run(TEXT_GENERATION_MODEL_ID, {
+    const result = await runTextGeneration(env, {
         messages: [{ role: "user", content: prompt }],
+        chat_template_kwargs: { enable_thinking: false },
         max_tokens: maxTokens,
-    }) as { response?: string };
-    return result.response ?? "";
+    });
+    return requireGeneratedText(result);
 }
 
 export async function llmCallSystem(
@@ -15,14 +74,15 @@ export async function llmCallSystem(
     env: Env,
     maxTokens = 1536,
 ): Promise<string> {
-    const result = await env.AI.run(TEXT_GENERATION_MODEL_ID, {
+    const result = await runTextGeneration(env, {
         messages: [
             { role: "system", content: system },
             { role: "user", content: user },
         ],
+        chat_template_kwargs: { enable_thinking: false },
         max_tokens: maxTokens,
-    }) as { response?: string };
-    return result.response ?? "";
+    });
+    return requireGeneratedText(result);
 }
 
 export function extractJsonObject<T extends Record<string, unknown>>(text: string): T | null {

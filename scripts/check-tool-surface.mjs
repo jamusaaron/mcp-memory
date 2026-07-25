@@ -29,7 +29,151 @@ const forbidden = new Set([
 	"r2_bucket_delete",
 	"r2_buckets_list",
 ]);
-const EXPECTED_TOOLS = 143;
+export const EXPECTED_TOOL_NAMES = [
+	"accounts_list",
+	"add_person",
+	"agent_handoff",
+	"agent_register_presence",
+	"agent_runs_list",
+	"agent_task_claim",
+	"agent_task_complete",
+	"agent_task_create",
+	"agent_task_fail",
+	"agent_task_list",
+	"agents_dashboard",
+	"ai_agents_list",
+	"ai_note_delete",
+	"ai_note_list",
+	"ai_note_read",
+	"ai_note_write",
+	"ai_notes_cross_check",
+	"analyze_patterns",
+	"append_session_intent",
+	"append_session_log",
+	"apply_pending_profile_updates",
+	"ask_user",
+	"audit_profile_health",
+	"auto_triage",
+	"backfill_embeddings",
+	"backfill_emotion_weights",
+	"batch_write_memories",
+	"behavioral_model",
+	"brief_for_agent",
+	"build_personality",
+	"bulk_tag_memories",
+	"check_write_activity",
+	"connection_map",
+	"d1_database_create",
+	"d1_database_delete",
+	"d1_database_get",
+	"d1_database_query",
+	"d1_databases_list",
+	"delete_blob",
+	"delete_context_doc",
+	"delete_person",
+	"dismiss_uncertainty",
+	"drafting_agent",
+	"edit_memory",
+	"embed_memory",
+	"emotional_context",
+	"evidence_agent",
+	"export_memories",
+	"extract_profile_updates_from_text",
+	"forget_memory",
+	"fulltext_search",
+	"generate_pattern_report",
+	"get_derived_artifact",
+	"get_high_salience",
+	"get_living_summary",
+	"get_memory_context",
+	"get_memory_index",
+	"get_person_profile",
+	"get_personality",
+	"get_personality_mode",
+	"get_session_brief",
+	"get_suppressed_memories",
+	"health_check",
+	"hyperdrive_config_delete",
+	"hyperdrive_config_edit",
+	"hyperdrive_config_get",
+	"hyperdrive_configs_list",
+	"import_memories",
+	"ingest_transcript",
+	"kv_namespace_create",
+	"kv_namespace_delete",
+	"kv_namespace_get",
+	"kv_namespace_update",
+	"kv_namespaces_list",
+	"list_blobs",
+	"list_context_docs",
+	"list_derived_artifacts",
+	"list_memories",
+	"list_open_uncertainties",
+	"list_pending_profile_updates",
+	"list_people",
+	"list_pinned_memories",
+	"list_reverify_queue",
+	"list_transcripts",
+	"memory_agent_ask",
+	"memory_db_readonly_query",
+	"memory_timeline",
+	"migrate_docs_to_r2",
+	"migrate_pages_to_workers_guide",
+	"morning_agent",
+	"multi_agent_debate",
+	"personality_feedback",
+	"pin_memory",
+	"promote_memory",
+	"propose_profile_updates",
+	"query_memories",
+	"query_memories_by_date",
+	"read_blob",
+	"read_context_doc",
+	"rebuild_living_summary",
+	"rebuild_profiles",
+	"rebuild_self_profile",
+	"recall",
+	"recall_decisions",
+	"record_observation",
+	"record_user_answer",
+	"reject_pending_profile_update",
+	"remember",
+	"remember_decision",
+	"research_agent",
+	"restore_derived_artifact",
+	"restore_memory",
+	"review_derived_artifact",
+	"run_agent",
+	"run_consolidation",
+	"run_decay_sweep",
+	"search_by_tag",
+	"search_cloudflare_documentation",
+	"search_people",
+	"session_audit",
+	"session_close",
+	"session_list",
+	"set_active_account",
+	"smart_context",
+	"storage_status",
+	"store_blob",
+	"strategy_agent",
+	"style_check_agent",
+	"submit_inbound",
+	"suppress_memory",
+	"topic_digest",
+	"unpin_memory",
+	"update_context_current",
+	"update_person",
+	"update_person_profile",
+	"update_profile",
+	"verify_memory",
+	"what_changed",
+	"workers_get_worker",
+	"workers_get_worker_code",
+	"workers_list",
+	"write_context_doc",
+	"write_memory",
+];
 const activeSources = new Map(
 	activeFiles.map((file) => [file, fs.readFileSync(path.resolve(file), "utf8")]),
 );
@@ -81,8 +225,20 @@ if (
 for (const name of forbidden) {
 	if (names.includes(name)) errors.push(`forbidden tool registered: ${name}`);
 }
-if (names.length !== EXPECTED_TOOLS)
-	errors.push(`expected ${EXPECTED_TOOLS} tools, found ${names.length}: ${names.join(", ")}`);
+const actual = new Set(names);
+const expected = new Set(EXPECTED_TOOL_NAMES);
+const missing = EXPECTED_TOOL_NAMES.filter((name) => !actual.has(name));
+const unexpected = [...actual].filter((name) => !expected.has(name)).sort();
+if (missing.length || unexpected.length) {
+	errors.push(
+		`tool-name snapshot mismatch\nmissing: ${missing.join(", ") || "none"}\nunexpected: ${
+			unexpected.join(", ") || "none"
+		}`,
+	);
+}
+if (EXPECTED_TOOL_NAMES.length !== 143) {
+	errors.push(`expected snapshot to contain 143 names, found ${EXPECTED_TOOL_NAMES.length}`);
+}
 if (new Set(names).size !== names.length) errors.push("duplicate tool names detected");
 
 // R2 must be optional — code may reference env.R2 but must not hard-require it
@@ -114,7 +270,7 @@ if (errors.length) {
 	process.exit(1);
 }
 console.log(
-	`Tool surface verified: ${names.length} tools; R2 binding ${
+	`Tool surface verified: exact ${EXPECTED_TOOL_NAMES.length}-name snapshot; R2 binding ${
 		hasR2Binding ? "ON" : "OFF (optional dual-backend ready)"
 	}`,
 );

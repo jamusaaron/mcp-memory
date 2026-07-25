@@ -1,6 +1,6 @@
 # MCP Memory
 
-Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 135 tools, multi-agent orchestration, and dual document storage (R2 when enabled, KV fallback).
+Persistent, structured long-term memory system for LLM assistants, built as a Cloudflare Worker exposing an MCP server with 143 tools, multi-agent orchestration, and dual document storage (R2 when enabled, KV fallback).
 
 ## Stack
 
@@ -25,6 +25,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/tools/context-docs.ts` — Context documents (R2 preferred, KV fallback)
 - `src/tools/blobs.ts` — Large blob storage + storage_status + KV→R2 migrate
 - `src/tools/behavioral.ts` — Behavioral and personality modeling
+- `src/tools/derived-artifacts.ts` — version listing, audited reads, candidate review, and safe restoration
 - `src/tools/ingestion.ts` — Ingestion pipeline (3 tools)
 - `src/tools/ai-agents.ts` — Cross-agent shared notes
 - `src/tools/agent-orchestrator.ts` — Specialized AI agents, task board, handoffs, debate
@@ -32,6 +33,10 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/tools/health.ts` — System health and degraded-capability reporting
 - `src/tools/infra.ts` — Cloudflare infra passthrough (22 tools; optional credentials required)
 - `src/utils/db.ts` — D1 database operations (incl. fulltext, pins, access tracking)
+- `src/utils/artifact-store.ts` — transactional D1 persistence for derived artifacts: evidence invalidation, explicit-deletion cascade, and the cache-purge outbox
+- `src/utils/artifact-synthesis.ts` — pure claim validation, citation checking, and canonical content hashing
+- `src/utils/artifact-service.ts` — artifact lifecycle orchestration: evidence selection, rebuild, review, and restoration
+- `src/utils/profile-facts.ts` — canonical self-profile facts with supersede/tombstone history
 - `src/utils/vectorize.ts` — Vectorize embedding, hybrid re-rank, metadata
 - `src/utils/kv.ts` — KV cache operations
 - `src/utils/static-context.ts` — KV-backed persistent context operations
@@ -51,6 +56,10 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 ## Architecture
 
 Each user gets an isolated namespace. Memories are structured with category, layer, confidence, salience, emotion weight, pins, and access counts. The system supports hybrid semantic+keyword search, contradiction detection, confidence decay, import/export, and KV-backed context docs (no R2). The MCP server runs as a Durable Object mounted at `/{userId}/sse`.
+
+### Derived artifacts
+
+D1 is authoritative for derived artifacts (living summary, self profile, behavioural profile). KV holds immutable per-version caches only: a cache entry is keyed by artifact ID and content hash, is never mutated in place, and is always validated against D1 first — so a tombstoned or superseded version can never be served from cache. Every artifact version carries its cited sources, validation state, and an append-only event log. Self-profile and behavioural-profile rebuilds produce review-required candidates that do not enter assistant context until approved; only living summaries publish directly. Evidence mutations invalidate affected artifacts atomically in the same D1 batch as the source write, and explicit source deletion redacts every cited version and durably queues its cache keys for purge.
 
 ## MCP Server Configuration
 

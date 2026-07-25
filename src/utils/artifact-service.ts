@@ -9,7 +9,11 @@ import {
 	type DerivedArtifactDetail,
 	type ProfileFact,
 } from "../types";
-import { createD1ArtifactStore, type ArtifactStore } from "./artifact-store";
+import {
+	createD1ArtifactStore,
+	recordArtifactRebuildFailure,
+	type ArtifactStore,
+} from "./artifact-store";
 import {
 	artifactContentSha256,
 	canonicalJson,
@@ -59,6 +63,8 @@ type EvidenceCollection = RawEvidenceCollection & {
 export type ArtifactServiceDependencies = {
 	store: ArtifactStore;
 	synthesis?: Partial<SynthesisDependencies>;
+	now(): Date;
+	recordArtifactRebuildFailure: typeof recordArtifactRebuildFailure;
 	countActiveProfileFacts: typeof countActiveProfileFacts;
 	ensureLegacySelfProfileFacts: typeof ensureLegacySelfProfileFacts;
 	listActiveProfileFacts: typeof listActiveProfileFacts;
@@ -519,6 +525,8 @@ function serviceDependencies(
 ): ArtifactServiceDependencies {
 	return {
 		store: createD1ArtifactStore(env),
+		now: () => new Date(),
+		recordArtifactRebuildFailure,
 		countActiveProfileFacts,
 		ensureLegacySelfProfileFacts,
 		listActiveProfileFacts,
@@ -596,54 +604,50 @@ async function rebuildWithDependencies(
 	env: Env,
 	deps: ArtifactServiceDependencies,
 ): Promise<ArtifactRebuildResult> {
-	const collected = await collectEvidence(userId, kind, env, deps);
-	const currentPack = await selectArtifactEvidence(
-		kind,
-		collected.evidence,
-		collected.eligibleCount,
-	);
-	if (collected.eligibleCount === 0 || currentPack.sources.length === 0) {
-		await deps.store.recordArtifactFailure(
-			userId,
-			kind,
-			"no_eligible_evidence",
-			currentPack.watermark,
-		);
-		throw new Error("no_eligible_evidence");
-	}
-	const active = await deps.store.getActiveArtifact(userId, kind);
-	if (
-		active?.status === "published" &&
-		active.source_watermark === currentPack.watermark &&
-		active.evidence_generation === collected.evidenceGeneration
-	) {
-		return { artifact: active, reused: true, published: true };
-	}
-	const existing = (
-		await deps.store.listArtifacts(userId, {
-			kind,
-			status: "candidate",
-			limit: 50,
-		})
-	).items.find(
-		(item) =>
-			item.validation_state === "validated" &&
-			item.source_watermark === currentPack.watermark &&
-			item.evidence_generation === collected.evidenceGeneration,
-	);
-	if (existing) {
-		if (kind === "living_summary") {
-			const published = await deps.store.publishArtifact(
-				userId,
-				existing.id,
-				"system",
-			);
-			return { artifact: published, reused: true, published: true };
-		}
-		return { artifact: existing, reused: true, published: false };
-	}
-
+	let failureWatermark: string | null = null;
 	try {
+		const collected = await collectEvidence(userId, kind, env, deps);
+		const currentPack = await selectArtifactEvidence(
+			kind,
+			collected.evidence,
+			collected.eligibleCount,
+		);
+		failureWatermark = currentPack.watermark;
+		if (collected.eligibleCount === 0 || currentPack.sources.length === 0) {
+			throw new Error("no_eligible_evidence");
+		}
+		const active = await deps.store.getActiveArtifact(userId, kind);
+		if (
+			active?.status === "published" &&
+			active.source_watermark === currentPack.watermark &&
+			active.evidence_generation === collected.evidenceGeneration
+		) {
+			return { artifact: active, reused: true, published: true };
+		}
+		const existing = (
+			await deps.store.listArtifacts(userId, {
+				kind,
+				status: "candidate",
+				limit: 50,
+			})
+		).items.find(
+			(item) =>
+				item.validation_state === "validated" &&
+				item.source_watermark === currentPack.watermark &&
+				item.evidence_generation === collected.evidenceGeneration,
+		);
+		if (existing) {
+			if (kind === "living_summary") {
+				const published = await deps.store.publishArtifact(
+					userId,
+					existing.id,
+					"system",
+				);
+				return { artifact: published, reused: true, published: true };
+			}
+			return { artifact: existing, reused: true, published: false };
+		}
+
 		const draft = await synthesizeArtifact(
 			kind,
 			collected.evidence,
@@ -674,12 +678,23 @@ async function rebuildWithDependencies(
 		const published = await deps.store.publishArtifact(userId, candidate.id, "system");
 		return { artifact: published, reused: false, published: true };
 	} catch (error) {
-		await deps.store.recordArtifactFailure(
-			userId,
-			kind,
-			artifactFailureCode(error),
-			currentPack.watermark,
-		);
+		const reasonCode = artifactFailureCode(error);
+		if (kind === "living_summary") {
+			await deps.recordArtifactRebuildFailure(
+				userId,
+				kind,
+				reasonCode,
+				deps.now(),
+				env,
+			);
+		} else {
+			await deps.store.recordArtifactFailure(
+				userId,
+				kind,
+				reasonCode,
+				failureWatermark,
+			);
+		}
 		throw error;
 	}
 }

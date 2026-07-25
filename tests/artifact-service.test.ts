@@ -62,6 +62,8 @@ const CLAIM: ArtifactClaim = {
 	citations: [{ source_kind: "memory", source_id: "m1" }],
 };
 
+const FIXED_NOW = "2026-07-25T00:00:00.000Z";
+
 type HarnessConfig = {
 	memory?: { evidence: ArtifactEvidence[]; eligibleCount: number };
 	kind?: ArtifactKind;
@@ -88,7 +90,18 @@ function serviceHarness(config: HarnessConfig = {}) {
 		restoreCalls: 0,
 		synthesisCalls: 0,
 		synthesisEvidence: [] as unknown[],
-		failures: [] as { userId: string; kind: string; reasonCode: string }[],
+		failures: [] as {
+			userId: string;
+			kind: string;
+			reasonCode: string;
+			watermark: string | null;
+		}[],
+		rebuildFailures: [] as {
+			userId: string;
+			kind: string;
+			reasonCode: string;
+			now: string;
+		}[],
 		getCalls: [] as { userId: string; artifactId: string }[],
 		restoredFromId: null as string | null,
 		active: config.active ?? null,
@@ -136,8 +149,13 @@ function serviceHarness(config: HarnessConfig = {}) {
 				? artifact({ ...config.nextCandidate, status: "published" })
 				: artifact({ id: "restored", status: "published", kind: config.kind });
 		},
-		async recordArtifactFailure(userId: string, kind: string, reasonCode: string) {
-			state.failures.push({ userId, kind, reasonCode });
+		async recordArtifactFailure(
+			userId: string,
+			kind: string,
+			reasonCode: string,
+			watermark: string | null,
+		) {
+			state.failures.push({ userId, kind, reasonCode, watermark });
 		},
 		async getLegacyImportState() {
 			return config.legacyImportState ?? null;
@@ -150,6 +168,20 @@ function serviceHarness(config: HarnessConfig = {}) {
 
 	const deps = {
 		store: store as never,
+		now: () => new Date(FIXED_NOW),
+		recordArtifactRebuildFailure: async (
+			userId: string,
+			kind: "living_summary",
+			reasonCode: string,
+			now: Date,
+		) => {
+			state.rebuildFailures.push({
+				userId,
+				kind,
+				reasonCode,
+				now: now.toISOString(),
+			});
+		},
 		countActiveProfileFacts: async () => config.memory?.eligibleCount ?? 0,
 		ensureLegacySelfProfileFacts: async () => {
 			state.legacySelfBackfillCalls += 1;
@@ -282,9 +314,107 @@ test("empty eligible evidence fails before synthesis and preserves active state"
 	assert.equal(harness.synthesisCalls, 0);
 	assert.equal(harness.active?.id, "current");
 	assert.equal(harness.candidateWrites, 0);
-	assert.deepEqual(harness.failures, [
-		{ userId: "u1", kind: "living_summary", reasonCode: "no_eligible_evidence" },
+	// The persistent rebuild-state writer is the single failure authority for
+	// living summaries; the content-free event-only writer must stay unused.
+	assert.deepEqual(harness.rebuildFailures, [
+		{
+			userId: "u1",
+			kind: "living_summary",
+			reasonCode: "no_eligible_evidence",
+			now: FIXED_NOW,
+		},
 	]);
+	assert.deepEqual(harness.failures, []);
+});
+
+test("a living synthesis failure takes the same single rebuild-state write path", async () => {
+	const harness = serviceHarness({
+		memory: { evidence: [evidence()], eligibleCount: 1 },
+		kind: "living_summary",
+		synthesisError: new Error("model_timeout"),
+	});
+	await assert.rejects(
+		createArtifactService({} as Env, harness.deps).rebuildDerivedArtifact("u1", "living_summary"),
+		/model_timeout/,
+	);
+	assert.deepEqual(harness.rebuildFailures, [
+		{
+			userId: "u1",
+			kind: "living_summary",
+			reasonCode: "model_timeout",
+			now: FIXED_NOW,
+		},
+	]);
+	assert.deepEqual(harness.failures, []);
+});
+
+test("a living publication failure records exactly one rebuild-state write", async () => {
+	const harness = serviceHarness({
+		memory: { evidence: [evidence()], eligibleCount: 1 },
+		kind: "living_summary",
+	});
+	harness.deps.store.publishArtifact = async () => {
+		throw new Error("d1_failure");
+	};
+	await assert.rejects(
+		createArtifactService({} as Env, harness.deps).rebuildDerivedArtifact("u1", "living_summary"),
+		/d1_failure/,
+	);
+	assert.equal(harness.rebuildFailures.length, 1);
+	assert.equal(harness.rebuildFailures[0].reasonCode, "d1_failure");
+	assert.deepEqual(harness.failures, []);
+});
+
+test("self and behavioural failures write only the content-free artifact event", async () => {
+	const self = serviceHarness({
+		memory: { evidence: [evidence({ kind: "profile_fact", id: "f1" })], eligibleCount: 1 },
+		kind: "self_profile",
+		synthesisError: new Error("invalid_model_output"),
+	});
+	await assert.rejects(
+		createArtifactService({} as Env, self.deps).rebuildDerivedArtifact("u1", "self_profile"),
+		/invalid_model_output/,
+	);
+	assert.equal(self.failures.length, 1);
+	assert.equal(self.failures[0].kind, "self_profile");
+	assert.equal(self.failures[0].reasonCode, "invalid_model_output");
+	assert.equal(typeof self.failures[0].watermark, "string");
+	assert.deepEqual(self.rebuildFailures, []);
+
+	const behavioral = serviceHarness({
+		memory: { evidence: [], eligibleCount: 0 },
+		kind: "behavioral_profile",
+	});
+	await assert.rejects(
+		createArtifactService({} as Env, behavioral.deps).rebuildDerivedArtifact(
+			"u1",
+			"behavioral_profile",
+		),
+		/no_eligible_evidence/,
+	);
+	assert.deepEqual(behavioral.failures, [
+		{
+			userId: "u1",
+			kind: "behavioral_profile",
+			reasonCode: "no_eligible_evidence",
+			watermark: behavioral.failures[0]?.watermark ?? null,
+		},
+	]);
+	assert.deepEqual(behavioral.rebuildFailures, []);
+});
+
+test("successful living publication records no rebuild-state failure", async () => {
+	const harness = serviceHarness({
+		memory: { evidence: [evidence()], eligibleCount: 1 },
+		kind: "living_summary",
+	});
+	const result = await createArtifactService({} as Env, harness.deps).rebuildDerivedArtifact(
+		"u1",
+		"living_summary",
+	);
+	assert.equal(result.published, true);
+	assert.deepEqual(harness.rebuildFailures, []);
+	assert.deepEqual(harness.failures, []);
 });
 
 test("review requires a reason for rejection and refuses approval after watermark drift", async () => {

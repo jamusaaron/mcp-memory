@@ -280,10 +280,6 @@ const worker = {
 		ctx.waitUntil(
 			(async () => {
 				try {
-					const initialization = await initializeDatabase(env);
-					if (!initialization.ready || initialization.changed) {
-						return;
-					}
 					await runScheduledMaintenance(env);
 				} catch (e) {
 					console.error("Scheduled maintenance failed:", e);

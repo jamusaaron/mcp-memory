@@ -380,11 +380,18 @@ export async function getMemoriesNeedingReverification(
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }
 
-export async function getUnembeddedMemories(userId: string, env: Env): Promise<Memory[]> {
+export async function getUnembeddedMemories(
+	userId: string,
+	env: Env,
+	limit = 100,
+): Promise<Memory[]> {
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
 	const res = await env.DB.prepare(
-		"SELECT * FROM memories WHERE userId=? AND embedding_status='pending' LIMIT 100",
+		`SELECT * FROM memories
+		 WHERE userId=? AND embedding_status='pending'
+		 LIMIT ?`,
 	)
-		.bind(userId)
+		.bind(userId, boundedLimit)
 		.all();
 	return (res.results as Record<string, unknown>[]).map(rowToMemory);
 }

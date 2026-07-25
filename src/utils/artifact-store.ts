@@ -1478,31 +1478,27 @@ function cachePurgeDelayMs(attemptCount: number): number {
 	return Math.min(24 * 60 * 60_000, 5 * 60_000 * 2 ** exponent);
 }
 
-export async function purgePendingArtifactCachesForUser(
-	userId: string,
+export function artifactRetryDelayMs(retryCount: number): number {
+	const exponent = Math.max(0, Math.trunc(retryCount) - 1);
+	return Math.min(24 * 60 * 60_000, 30 * 60_000 * 2 ** exponent);
+}
+
+type ArtifactCachePurgeRow = {
+	userId: string;
+	kind: ArtifactKind;
+	artifact_id: string;
+	operation_id: string;
+	attempt_count: number;
+};
+
+async function purgeArtifactCacheRows(
+	rows: readonly ArtifactCachePurgeRow[],
 	env: Env,
-	limit = 100,
+	now: Date,
 ): Promise<{ purged: string[]; failed: string[] }> {
-	const now = new Date();
-	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
-	const result = await env.DB.prepare(
-		`SELECT userId,kind,artifact_id,operation_id,attempt_count
-		 FROM artifact_cache_purge_queue
-		 WHERE userId=? AND (next_attempt_at IS NULL OR next_attempt_at<=?)
-		 ORDER BY COALESCE(next_attempt_at,''),artifact_id
-		 LIMIT ?`,
-	)
-		.bind(userId, now.toISOString(), boundedLimit)
-		.all<{
-			userId: string;
-			kind: ArtifactKind;
-			artifact_id: string;
-			operation_id: string;
-			attempt_count: number;
-		}>();
 	const purged: string[] = [];
 	const failed: string[] = [];
-	for (const row of result.results) {
+	for (const row of rows) {
 		const key = artifactCacheKey(row.userId, row.kind, row.artifact_id);
 		try {
 			await env.KV.delete(key);
@@ -1544,6 +1540,162 @@ export async function purgePendingArtifactCachesForUser(
 		}
 	}
 	return { purged, failed };
+}
+
+export async function purgePendingArtifactCachesForUser(
+	userId: string,
+	env: Env,
+	limit = 100,
+): Promise<{ purged: string[]; failed: string[] }> {
+	const now = new Date();
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const result = await env.DB.prepare(
+		`SELECT userId,kind,artifact_id,operation_id,attempt_count
+		 FROM artifact_cache_purge_queue
+		 WHERE userId=? AND (next_attempt_at IS NULL OR next_attempt_at<=?)
+		 ORDER BY COALESCE(next_attempt_at,''),artifact_id
+		 LIMIT ?`,
+	)
+		.bind(userId, now.toISOString(), boundedLimit)
+		.all<ArtifactCachePurgeRow>();
+	return purgeArtifactCacheRows(result.results, env, now);
+}
+
+export async function purgeDueArtifactCaches(
+	env: Env,
+	limit: number,
+	now: Date,
+): Promise<{ attempted: number; purged: number; failed: number }> {
+	const boundedLimit = Math.min(10, Math.max(1, Math.trunc(limit)));
+	const result = await env.DB.prepare(
+		`SELECT userId,kind,artifact_id,operation_id,attempt_count
+		 FROM artifact_cache_purge_queue
+		 WHERE next_attempt_at IS NULL OR next_attempt_at<=?
+		 ORDER BY COALESCE(next_attempt_at,''),userId,artifact_id
+		 LIMIT ?`,
+	)
+		.bind(now.toISOString(), boundedLimit)
+		.all<{
+			userId: string;
+			kind: ArtifactKind;
+			artifact_id: string;
+			operation_id: string;
+			attempt_count: number;
+		}>();
+	const outcome = await purgeArtifactCacheRows(result.results, env, now);
+	return {
+		attempted: result.results.length,
+		purged: outcome.purged.length,
+		failed: outcome.failed.length,
+	};
+}
+
+export async function listDueLivingSummaryTenants(
+	env: Env,
+	limit: number,
+	now: string,
+): Promise<string[]> {
+	const boundedLimit = Math.min(1, Math.max(1, Math.floor(limit)));
+	const result = await env.DB.prepare(
+		`SELECT tenants.userId
+		 FROM (
+			SELECT DISTINCT userId
+			FROM memories
+			WHERE suppressed=0
+		 ) AS tenants
+		 LEFT JOIN derived_artifacts AS active
+			ON active.userId=tenants.userId
+			AND active.kind='living_summary'
+			AND active.status IN ('published','stale')
+		 LEFT JOIN derived_artifact_rebuild_state AS rebuild
+			ON rebuild.userId=tenants.userId
+			AND rebuild.kind='living_summary'
+		 WHERE (active.id IS NULL OR active.status='stale')
+			AND (rebuild.next_retry_at IS NULL OR rebuild.next_retry_at<=?)
+		 ORDER BY COALESCE(rebuild.next_retry_at, '') ASC, tenants.userId ASC
+		 LIMIT ?`,
+	)
+		.bind(now, boundedLimit)
+		.all<{ userId: string }>();
+	return result.results.map(({ userId }) => userId);
+}
+
+export async function recordArtifactRebuildFailure(
+	userId: string,
+	kind: "living_summary",
+	reasonCode: string,
+	now: Date,
+	env: Env,
+): Promise<void> {
+	const safeReasonCode = ARTIFACT_FAILURE_CODES.includes(
+		reasonCode as ArtifactFailureCode,
+	)
+		? (reasonCode as ArtifactFailureCode)
+		: "generation_failed";
+	const nowIso = now.toISOString();
+	const operationId = crypto.randomUUID();
+	const eventId = crypto.randomUUID();
+	await env.DB.batch([
+		env.DB.prepare(
+			`INSERT INTO derived_artifact_rebuild_state
+			 (userId,kind,retry_count,next_retry_at,last_error_code,
+			  operation_id,updated_at)
+			 SELECT ?,?,1,
+			        strftime('%Y-%m-%dT%H:%M:%fZ',
+			          julianday(?) + 1800.0 / 86400.0),
+			        ?,?,?
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM derived_artifacts active
+				WHERE active.userId=? AND active.kind=?
+				  AND active.status='published'
+			 )
+			 ON CONFLICT(userId,kind) DO UPDATE SET
+			  retry_count=derived_artifact_rebuild_state.retry_count+1,
+			  next_retry_at=strftime(
+				'%Y-%m-%dT%H:%M:%fZ',
+				julianday(?) + (
+					CASE derived_artifact_rebuild_state.retry_count
+						WHEN 0 THEN 1800
+						WHEN 1 THEN 3600
+						WHEN 2 THEN 7200
+						WHEN 3 THEN 14400
+						WHEN 4 THEN 28800
+						WHEN 5 THEN 57600
+						ELSE 86400
+					END
+				) / 86400.0
+			  ),
+			  last_error_code=excluded.last_error_code,
+			  operation_id=excluded.operation_id,
+			  updated_at=excluded.updated_at
+			 WHERE NOT EXISTS (
+				SELECT 1 FROM derived_artifacts active
+				WHERE active.userId=excluded.userId
+				  AND active.kind=excluded.kind
+				  AND active.status='published'
+			 )`,
+		).bind(
+			userId,
+			kind,
+			nowIso,
+			safeReasonCode,
+			operationId,
+			nowIso,
+			userId,
+			kind,
+			nowIso,
+		),
+		env.DB.prepare(
+			`INSERT INTO derived_artifact_events
+			 (id,userId,artifact_id,kind,event_type,reason_code,actor,
+			  source_watermark,metadata_json,created_at)
+			 SELECT ?,state.userId,NULL,state.kind,'generation_failed',
+			        state.last_error_code,'system',NULL,'{}',?
+			 FROM derived_artifact_rebuild_state state
+			 WHERE state.userId=? AND state.kind=?
+			   AND state.operation_id=?`,
+		).bind(eventId, nowIso, userId, kind, operationId),
+	]);
 }
 
 function legacyRetirementStatements(

@@ -665,6 +665,53 @@ test("expired coordination leases recover once and leave the stale lease unusabl
 	);
 });
 
+test("an expired canonical UUID lease reaches lease-state validation", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "uuid-collision-task" });
+	const collisionUuid = "12345678-1234-4567-89ab-0123456789ab";
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	await claimCoordinationTask(
+		"uuid-collision-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	harness.db
+		.prepare(
+			"UPDATE coordination_task_leases SET lease_id=? WHERE userId=? AND task_id=?",
+		)
+		.run(collisionUuid, "u1", "uuid-collision-task");
+	current = "2026-07-27T01:06:00.000Z";
+	await assert.rejects(
+		() => heartbeatCoordinationTask(collisionUuid, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+});
+
+test("a UUID-shaped secret pattern remains invalid for a task identifier", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	const collisionUuid = "12345678-1234-4567-89ab-0123456789ab";
+	seedAgentTask(harness, { id: collisionUuid });
+
+	await assert.rejects(
+		() =>
+			claimCoordinationTask(
+				collisionUuid,
+				"u1",
+				"worker-a",
+				harness.env,
+				() => INITIAL_NOW,
+			),
+		/taskId must be a safe identifier/i,
+	);
+});
+
 test("coordination leases fail closed for unsafe, terminal, foreign, missing, and partial task boards", async (t) => {
 	const harness = createSqliteD1Harness();
 	t.after(() => harness.close());

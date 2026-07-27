@@ -46,6 +46,7 @@ const MAX_COUNCIL_EVIDENCE_TOTAL_CHARS = 6_000;
 const TRANSCRIPT_SHAPE =
 	/(?:^|\n)\s*(?:user|assistant|system|developer|tool)\s*:|<\s*\/?\s*(?:user|assistant|system|developer|tool)\s*>|<\|(?:user|assistant|system|developer|tool)\|>/i;
 const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
+const CANONICAL_UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SAFE_RECALLED_SOURCE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PROVENANCE = new Set<string>(COORDINATION_PROVENANCE);
 const COUNCIL_ROLE_SET = new Set<string>(COUNCIL_ROLES);
@@ -198,18 +199,20 @@ function assertSafeCoordinationText(value: unknown, field: string, maxChars: num
 function safeIdentifier(
 	value: unknown,
 	field: string,
-	options: { nullable?: boolean } = {},
+	options: { nullable?: boolean; allowCanonicalUuid?: boolean } = {},
 ): string | null {
 	if ((value === null || value === undefined) && options.nullable) return null;
 	if (typeof value !== "string") {
 		throw new Error(`${field} must be a safe identifier`);
 	}
 	const normalized = value.trim();
+	const trustedCanonicalUuid =
+		options.allowCanonicalUuid && CANONICAL_UUID_V4.test(normalized);
 	if (
 		!normalized ||
 		normalized.length > MAX_IDENTIFIER_CHARS ||
 		!SAFE_IDENTIFIER.test(normalized) ||
-		containsHardSecret(normalized) ||
+		(!trustedCanonicalUuid && containsHardSecret(normalized)) ||
 		containsRestrictedCoordinationData(normalized)
 	) {
 		throw new Error(`${field} must be a safe identifier`);
@@ -662,7 +665,9 @@ export async function heartbeatCoordinationTask(
 	env: Env,
 	clock: CoordinationClock,
 ): Promise<CoordinationLease> {
-	const lease = safeIdentifier(leaseId, "leaseId") as string;
+	const lease = safeIdentifier(leaseId, "leaseId", {
+		allowCanonicalUuid: true,
+	}) as string;
 	const user = safeIdentifier(userId, "userId") as string;
 	const actor = safeIdentifier(actorId, "actorId") as string;
 	const timestamp = nowIso(clock);
@@ -747,7 +752,9 @@ export async function releaseCoordinationTask(
 	clock: CoordinationClock,
 	options: ReleaseCoordinationTaskOptions = {},
 ): Promise<CoordinationLease> {
-	const lease = safeIdentifier(leaseId, "leaseId") as string;
+	const lease = safeIdentifier(leaseId, "leaseId", {
+		allowCanonicalUuid: true,
+	}) as string;
 	const user = safeIdentifier(userId, "userId") as string;
 	const actor = safeIdentifier(actorId, "actorId") as string;
 	const finalState = options.final_state ?? "released";

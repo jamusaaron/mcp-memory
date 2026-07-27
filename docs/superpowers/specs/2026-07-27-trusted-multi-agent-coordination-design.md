@@ -47,7 +47,7 @@ The council has exactly these seven deterministic roles:
 6. **Operations** — checks feasibility, dependencies, rollout, and rollback implications.
 7. **Adversarial review** — searches for contradictions, failure cases, and unaddressed dissent.
 
-Each council member records an `approve`, `reject`, or `escalate` vote and a required reason. Members may cite handoff IDs and evidence IDs, but retrieved text is treated as untrusted data, never executable instruction.
+The Worker owns the council identities and invokes all seven roles itself for each submitted proposal. Clients can create a proposal and read its decision, but cannot impersonate a council member or supply a vote. Each server-run member records an `approve`, `reject`, or `escalate` vote and a required reason. Members may cite handoff IDs and evidence IDs, but retrieved text is treated as untrusted data, never executable instruction.
 
 A decision is final only when all seven votes are recorded. Approval requires at least five `approve` votes and no `escalate` vote. Rejection occurs when three or more members reject. Any `escalate` result requires a human or explicit caller resolution; it is not an approval. The final artifact contains the immutable proposal, every vote and rationale, the outcome, timestamps, and a compact synthesis. The caller may request a new council run; it supersedes, but never overwrites, the earlier decision.
 
@@ -67,7 +67,7 @@ New tools are grouped as follows:
 - `coordination_handoff_submit`, `coordination_handoff_list`, `coordination_handoff_review`
 - `coordination_task_claim`, `coordination_task_heartbeat`, `coordination_task_release`
 - `coordination_brief`
-- `council_proposal_create`, `council_vote_record`, `council_decision_get`
+- `council_proposal_create`, `council_decide`, `council_decision_get`
 
 Exact schemas, result fields, and descriptions are derived from the implementation and included in the new tests. Existing tools are neither renamed nor removed.
 

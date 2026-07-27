@@ -7,6 +7,7 @@ import { registerAiAgentTools } from "./tools/ai-agents";
 import { registerBehavioralTools } from "./tools/behavioral";
 import { registerBlobTools } from "./tools/blobs";
 import { registerContextDocTools } from "./tools/context-docs";
+import { registerCoordinationTools } from "./tools/coordination";
 import { registerDailyRecallTools } from "./tools/daily-recall";
 import { registerDerivedArtifactTools } from "./tools/derived-artifacts";
 import { registerHealthTools } from "./tools/health";
@@ -40,6 +41,7 @@ export class MyMCP extends McpAgent<Env, Record<string, never>, MyMCPProps> {
 		registerUncertaintyTools(this.server, env, userId);
 		registerSessionTools(this.server, env, userId);
 		registerContextDocTools(this.server, env, userId);
+		registerCoordinationTools(this.server, env, userId);
 		registerBlobTools(this.server, env, userId);
 		registerBehavioralTools(this.server, env, userId);
 		registerDerivedArtifactTools(this.server, env, userId);

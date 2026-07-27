@@ -9,6 +9,7 @@ const activeFiles = [
 	"src/tools/uncertainty.ts",
 	"src/tools/session.ts",
 	"src/tools/context-docs.ts",
+	"src/tools/coordination.ts",
 	"src/tools/blobs.ts",
 	"src/tools/behavioral.ts",
 	"src/tools/derived-artifacts.ts",
@@ -63,6 +64,16 @@ export const EXPECTED_TOOL_NAMES = [
 	"bulk_tag_memories",
 	"check_write_activity",
 	"connection_map",
+	"coordination_brief",
+	"coordination_handoff_list",
+	"coordination_handoff_review",
+	"coordination_handoff_submit",
+	"coordination_task_claim",
+	"coordination_task_heartbeat",
+	"coordination_task_release",
+	"council_decide",
+	"council_decision_get",
+	"council_proposal_create",
 	"d1_database_create",
 	"d1_database_delete",
 	"d1_database_get",
@@ -236,8 +247,8 @@ if (missing.length || unexpected.length) {
 		}`,
 	);
 }
-if (EXPECTED_TOOL_NAMES.length !== 143) {
-	errors.push(`expected snapshot to contain 143 names, found ${EXPECTED_TOOL_NAMES.length}`);
+if (EXPECTED_TOOL_NAMES.length !== 153) {
+	errors.push(`expected snapshot to contain 153 names, found ${EXPECTED_TOOL_NAMES.length}`);
 }
 if (new Set(names).size !== names.length) errors.push("duplicate tool names detected");
 
@@ -264,6 +275,9 @@ if (!indexSource.includes("RATE_LIMITER.limit"))
 const mcpSource = fs.readFileSync("src/mcp.ts", "utf8");
 if (!mcpSource.includes("registerBlobTools")) {
 	errors.push("blob tools not registered in mcp.ts");
+}
+if (!mcpSource.includes("registerCoordinationTools")) {
+	errors.push("coordination tools not registered in mcp.ts");
 }
 if (errors.length) {
 	console.error(errors.join("\n"));

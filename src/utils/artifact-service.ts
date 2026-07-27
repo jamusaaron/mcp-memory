@@ -15,6 +15,7 @@ import {
 	type ArtifactStore,
 } from "./artifact-store";
 import {
+	ARTIFACT_PROMPT_VERSION,
 	artifactContentSha256,
 	canonicalJson,
 	selectArtifactEvidence,
@@ -620,7 +621,8 @@ async function rebuildWithDependencies(
 		if (
 			active?.status === "published" &&
 			active.source_watermark === currentPack.watermark &&
-			active.evidence_generation === collected.evidenceGeneration
+			active.evidence_generation === collected.evidenceGeneration &&
+			active.prompt_version === ARTIFACT_PROMPT_VERSION
 		) {
 			return { artifact: active, reused: true, published: true };
 		}
@@ -634,7 +636,8 @@ async function rebuildWithDependencies(
 			(item) =>
 				item.validation_state === "validated" &&
 				item.source_watermark === currentPack.watermark &&
-				item.evidence_generation === collected.evidenceGeneration,
+				item.evidence_generation === collected.evidenceGeneration &&
+				item.prompt_version === ARTIFACT_PROMPT_VERSION,
 		);
 		if (existing) {
 			if (kind === "living_summary") {

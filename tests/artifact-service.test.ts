@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createArtifactService } from "../src/utils/artifact-service";
-import { artifactContentSha256, selectArtifactEvidence } from "../src/utils/artifact-synthesis";
+import {
+	ARTIFACT_PROMPT_VERSION,
+	artifactContentSha256,
+	selectArtifactEvidence,
+} from "../src/utils/artifact-synthesis";
 import type { ArtifactClaim, ArtifactEvidence, ArtifactKind, DerivedArtifact } from "../src/types";
 
 function evidence(overrides: Partial<ArtifactEvidence> = {}): ArtifactEvidence {
@@ -41,7 +45,7 @@ function artifact(overrides: Partial<DerivedArtifact> = {}): DerivedArtifact {
 		source_truncated: false,
 		content_sha256: "hash",
 		model: "test-model",
-		prompt_version: "trusted-artifacts-v1",
+		prompt_version: ARTIFACT_PROMPT_VERSION,
 		validation: {},
 		supersedes_id: null,
 		created_at: "2026-07-24T00:00:00.000Z",
@@ -417,6 +421,59 @@ test("successful living publication records no rebuild-state failure", async () 
 	assert.deepEqual(harness.failures, []);
 });
 
+test("a published artifact from an older prompt version is regenerated", async () => {
+	const livingEvidence = [evidence()];
+	const pack = await selectArtifactEvidence("living_summary", livingEvidence, 1);
+	const harness = serviceHarness({
+		memory: { evidence: livingEvidence, eligibleCount: 1 },
+		kind: "living_summary",
+		active: artifact({
+			id: "old-prompt",
+			status: "published",
+			source_watermark: pack.watermark,
+			evidence_generation: 0,
+			prompt_version: "trusted-artifacts-v1",
+		}),
+	});
+
+	const result = await createArtifactService({} as Env, harness.deps).rebuildDerivedArtifact(
+		"u1",
+		"living_summary",
+	);
+
+	assert.equal(result.reused, false);
+	assert.equal(harness.synthesisCalls, 1);
+	assert.equal(harness.candidateWrites, 1);
+});
+
+test("a candidate from an older prompt version is regenerated instead of reused", async () => {
+	const livingEvidence = [evidence()];
+	const pack = await selectArtifactEvidence("living_summary", livingEvidence, 1);
+	const harness = serviceHarness({
+		memory: { evidence: livingEvidence, eligibleCount: 1 },
+		kind: "living_summary",
+		candidate: artifact({
+			id: "old-prompt-candidate",
+			kind: "living_summary",
+			status: "candidate",
+			validation_state: "validated",
+			source_watermark: pack.watermark,
+			evidence_generation: 0,
+			prompt_version: "trusted-artifacts-v1",
+		}),
+	});
+
+	const result = await createArtifactService({} as Env, harness.deps).rebuildDerivedArtifact(
+		"u1",
+		"living_summary",
+	);
+
+	assert.equal(result.reused, false);
+	assert.equal(harness.synthesisCalls, 1);
+	assert.equal(harness.candidateWrites, 1);
+	assert.equal(harness.publishCalls, 1);
+});
+
 test("review requires a reason for rejection and refuses approval after watermark drift", async () => {
 	const harness = serviceHarness({
 		artifactById: artifact({
@@ -544,7 +601,7 @@ test("restore rejects unapproved, legacy-unverified, and uncited historical arti
 	assert.equal(unapproved.restoreCalls + legacy.restoreCalls + uncited.restoreCalls, 0);
 });
 
-test("a reused living candidate publishes while a reused profile candidate stays pending", async () => {
+test("a current living candidate publishes without another synthesis", async () => {
 	const livingEvidence = [evidence()];
 	const livingPack = await selectArtifactEvidence("living_summary", livingEvidence, 1);
 	const living = serviceHarness({
@@ -552,71 +609,13 @@ test("a reused living candidate publishes while a reused profile candidate stays
 		candidate: artifact({ id: "living-candidate", kind: "living_summary", status: "candidate", validation_state: "validated", source_watermark: livingPack.watermark }),
 		kind: "living_summary",
 	});
-	assert.equal(
-		(await createArtifactService({} as Env, living.deps).rebuildDerivedArtifact("u1", "living_summary")).published,
-		true,
-	);
+	const livingResult = await createArtifactService(
+		{} as Env,
+		living.deps,
+	).rebuildDerivedArtifact("u1", "living_summary");
+	assert.equal(livingResult.published, true);
+	assert.equal(livingResult.reused, true);
 	assert.equal(living.publishCalls, 1);
-
-	const selfEvidence = [evidence({ kind: "profile_fact", id: "f1" })];
-	const selfFacts = [
-		{
-			id: "f1",
-			userId: "u1",
-			section: "identity" as const,
-			field: "f",
-			value: "v",
-			confidence: 1,
-			source_type: "stated" as const,
-			source_id: null,
-			status: "active" as const,
-			supersedes_id: null,
-			verified_at: "2026-07-24T00:00:00.000Z",
-			created_at: "2026-07-24T00:00:00.000Z",
-			updated_at: "2026-07-24T00:00:00.000Z",
-		},
-	];
-	// derive the same profile_fact evidence the service will build, to match the watermark
-	const { canonicalJson: cj, sha256Hex: sh } = await import("../src/utils/artifact-synthesis");
-	const factEvidence: ArtifactEvidence[] = await Promise.all(
-		selfFacts.map(async (f) => ({
-			kind: "profile_fact" as const,
-			id: f.id,
-			text: `${f.section}.${f.field}: ${f.value}`,
-			sourceSha256: await sh(
-				cj({
-					id: f.id,
-					section: f.section,
-					field: f.field,
-					value: f.value,
-					confidence: f.confidence,
-					source_type: f.source_type,
-					source_id: f.source_id,
-					status: f.status,
-					verified_at: f.verified_at,
-					updated_at: f.updated_at,
-				}),
-			),
-			section: f.section,
-			updatedAt: f.updated_at,
-			status: "active" as const,
-			sourceType: "stated" as const,
-			verified: true,
-			confidence: 1,
-			salience: 1,
-			pinned: false,
-			core: true,
-		})),
-	);
-	const selfPack = await selectArtifactEvidence("self_profile", factEvidence, 1);
-	const profile = serviceHarness({
-		memory: { evidence: selfEvidence, eligibleCount: 1 },
-		candidate: artifact({ id: "self-candidate", kind: "self_profile", status: "candidate", validation_state: "validated", source_watermark: selfPack.watermark }),
-		kind: "self_profile",
-	});
-	assert.equal(
-		(await createArtifactService({} as Env, profile.deps).rebuildDerivedArtifact("u1", "self_profile")).published,
-		false,
-	);
-	assert.equal(profile.publishCalls, 0);
+	assert.equal(living.synthesisCalls, 0);
+	assert.equal(living.candidateWrites, 0);
 });

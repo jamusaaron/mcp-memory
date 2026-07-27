@@ -562,6 +562,14 @@ test("coordination write gates reject labelled session values in durable inputs 
 			input: handoffInput({ source_run_id: "jsessionid:opaque-session-token" }),
 			value: "jsessionid:opaque-session-token",
 		},
+		{
+			input: handoffInput({ summary: "app_session=opaque-value" }),
+			value: "app_session=opaque-value",
+		},
+		{
+			input: handoffInput({ source_run_id: "app_session-opaque-value" }),
+			value: "app_session-opaque-value",
+		},
 	];
 	for (const { input, value } of prohibited) {
 		await assert.rejects(
@@ -580,6 +588,14 @@ test("coordination write gates reject labelled session values in durable inputs 
 		).count,
 		0,
 	);
+	const ordinaryProse = await submitHandoff(
+		handoffInput({ summary: "The myappsession configuration is ready for review." }),
+		"u1",
+		"author",
+		harness.env,
+		clock,
+	);
+	assert.equal(ordinaryProse.summary, "The myappsession configuration is ready for review.");
 });
 
 test("legacy recalled identifiers cannot close the untrusted coordination data block", async (t) => {

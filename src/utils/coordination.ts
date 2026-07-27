@@ -29,7 +29,7 @@ const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/;
 const SAFE_RECALLED_SOURCE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PROVENANCE = new Set<string>(COORDINATION_PROVENANCE);
 const RESTRICTED_COORDINATION_DATA = [
-	/\b(?:j?session(?:[\s_-]*(?:id|identifier)|id)?|sid|phpsessid|connect[._-]sid|asp[._-]?net[._-]?sessionid|laravel[._-]session)\s*(?:=|:)\s*[^\s,;]+|\b(?:j?session(?:[\s_]*(?:id|identifier)|id)?|sid|phpsessid|connect[._-]sid|asp[._-]?net[._-]?sessionid|laravel[._-]session)-[A-Za-z0-9._~+/=-]+\b/i,
+	/(?:^|[^A-Za-z0-9])(?:j?session(?:[\s_-]*(?:id|identifier)|id)?|sid|phpsessid|connect[._-]sid|asp[._-]?net[._-]?sessionid|laravel[._-]session)\s*(?:=|:)\s*[^\s,;]+|(?:^|[^A-Za-z0-9])(?:j?session(?:[\s_]*(?:id|identifier)|id)?|sid|phpsessid|connect[._-]sid|asp[._-]?net[._-]?sessionid|laravel[._-]session)-[A-Za-z0-9._~+/=-]+\b/i,
 	/\b(?:passport(?:\s*(?:number|no\.?))?|driver'?s?\s+licen[cs]e(?:\s*(?:number|no\.?))?|medicare(?:\s*(?:number|no\.?))?|tax\s+file\s+number|tfn|social\s+security(?:\s*(?:number|no\.?))?|national\s+(?:id|identifier)|bank\s+account(?:\s*(?:number|no\.?))?|bsb)\b/i,
 	/\b(?:medical|health)\s+record\b|\b(?:patient|diagnos(?:is|ed)|medication|prescription|mental\s+health|disability|sexual\s+orientation|pregnan(?:cy|t))\b/i,
 	/\+\d{1,3}(?:[\s()-]?\d){7,}\b|\b\d{3}[ )-]\d{3}[- ]\d{4}\b/,

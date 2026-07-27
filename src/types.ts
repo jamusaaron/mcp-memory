@@ -192,6 +192,152 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = typeof AGENT_ROLES[number];
 
+// ---- Trusted multi-agent coordination types ----
+
+export const COORDINATION_PROVENANCE = [
+	"user",
+	"document",
+	"agent",
+	"inference",
+] as const;
+export type CoordinationProvenance =
+	(typeof COORDINATION_PROVENANCE)[number];
+
+export const COORDINATION_HANDOFF_STATES = [
+	"draft",
+	"submitted",
+	"verified",
+	"rejected",
+	"expired",
+] as const;
+export type CoordinationHandoffState =
+	(typeof COORDINATION_HANDOFF_STATES)[number];
+
+export const COUNCIL_ROLES = [
+	"evidence",
+	"user_intent",
+	"safety",
+	"privacy",
+	"strategy",
+	"operations",
+	"adversarial_review",
+] as const;
+export type CouncilRole = (typeof COUNCIL_ROLES)[number];
+
+export const COUNCIL_VOTES = ["approve", "reject", "escalate"] as const;
+export type CouncilVoteValue = (typeof COUNCIL_VOTES)[number];
+
+export type CoordinationLeaseState =
+	| "active"
+	| "released"
+	| "expired"
+	| "completed"
+	| "failed";
+
+export type CoordinationTaskEventType =
+	| "claimed"
+	| "heartbeated"
+	| "released"
+	| "expired"
+	| "completed"
+	| "failed";
+
+export type CouncilProposalStatus = "open" | "decided" | "expired";
+export type CouncilOutcome =
+	| "pending"
+	| "approved"
+	| "rejected"
+	| "escalated";
+
+export interface CoordinationHandoff {
+	id: string;
+	userId: string;
+	from_agent: string;
+	to_agent: string | null;
+	target_role: string | null;
+	summary: string;
+	next_steps: string;
+	evidence: string[];
+	provenance: CoordinationProvenance;
+	confidence: number;
+	state: CoordinationHandoffState;
+	expires_at: string | null;
+	submitted_at: string | null;
+	content_sha256: string;
+	source_run_id: string | null;
+	supersedes_id: string | null;
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CoordinationHandoffReview {
+	id: string;
+	userId: string;
+	handoff_id: string;
+	reviewer_id: string;
+	decision: Extract<CoordinationHandoffState, "verified" | "rejected">;
+	reason: string | null;
+	evidence: string[];
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CoordinationLease {
+	id: string;
+	userId: string;
+	task_id: string;
+	lease_id: string;
+	holder_id: string;
+	state: CoordinationLeaseState;
+	leased_at: string;
+	heartbeat_at: string;
+	expires_at: string;
+	released_at: string | null;
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CouncilProposal {
+	id: string;
+	userId: string;
+	question: string;
+	options: string[];
+	evidence_ids: string[];
+	council_roles: CouncilRole[];
+	status: CouncilProposalStatus;
+	expires_at: string | null;
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CouncilVote {
+	id: string;
+	userId: string;
+	proposal_id: string;
+	council_role: CouncilRole;
+	vote: CouncilVoteValue;
+	reason: string;
+	evidence_ids: string[];
+	source_run_id: string | null;
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CouncilDecision {
+	proposal: CouncilProposal;
+	votes: CouncilVote[];
+	outcome: CouncilOutcome;
+	approve_count: number;
+	reject_count: number;
+	escalate_count: number;
+	decided_at: string | null;
+}
+
 // ---- Trusted second-brain artifact types ----
 
 export const ARTIFACT_KINDS = [

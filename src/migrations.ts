@@ -222,6 +222,145 @@ export const DATABASE_MIGRATIONS: readonly MigrationDefinition[] = [
 			},
 		},
 	},
+	{
+		version: 5,
+		name: "trusted_multi_agent_coordination",
+		statements: [
+			`CREATE TABLE IF NOT EXISTS coordination_handoffs (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				from_agent TEXT NOT NULL,
+				to_agent TEXT,
+				target_role TEXT,
+				summary TEXT NOT NULL,
+				next_steps TEXT NOT NULL,
+				evidence_json TEXT NOT NULL DEFAULT '[]',
+				provenance TEXT NOT NULL CHECK(provenance IN ('user','document','agent','inference')),
+				confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+				state TEXT NOT NULL DEFAULT 'draft' CHECK(state IN ('draft','submitted','verified','rejected','expired')),
+				expires_at TEXT,
+				submitted_at TEXT,
+				content_sha256 TEXT NOT NULL,
+				source_run_id TEXT,
+				supersedes_id TEXT,
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(userId,id),
+				CHECK(to_agent IS NOT NULL OR target_role IS NOT NULL),
+				FOREIGN KEY(userId,supersedes_id) REFERENCES coordination_handoffs(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_coordination_handoffs_route
+			 ON coordination_handoffs(userId,to_agent,target_role,state,expires_at,created_at DESC,id ASC)`,
+			`CREATE TABLE IF NOT EXISTS coordination_handoff_reviews (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				handoff_id TEXT NOT NULL,
+				reviewer_id TEXT NOT NULL,
+				decision TEXT NOT NULL CHECK(decision IN ('verified','rejected')),
+				reason TEXT,
+				evidence_json TEXT NOT NULL DEFAULT '[]',
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(userId,handoff_id,reviewer_id),
+				FOREIGN KEY(userId,handoff_id) REFERENCES coordination_handoffs(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_coordination_handoff_reviews
+			 ON coordination_handoff_reviews(userId,handoff_id,created_at DESC,id DESC)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_tenant_id
+			 ON agent_tasks(userId,id)`,
+			`CREATE TABLE IF NOT EXISTS coordination_task_leases (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				task_id TEXT NOT NULL,
+				lease_id TEXT NOT NULL,
+				holder_id TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'active' CHECK(state IN ('active','released','expired','completed','failed')),
+				leased_at TEXT NOT NULL,
+				heartbeat_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				released_at TEXT,
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(userId,task_id),
+				UNIQUE(userId,lease_id),
+				FOREIGN KEY(userId,task_id) REFERENCES agent_tasks(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_coordination_task_leases
+			 ON coordination_task_leases(userId,task_id,state,expires_at,lease_id)`,
+			`CREATE TABLE IF NOT EXISTS coordination_task_events (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				task_id TEXT NOT NULL,
+				lease_id TEXT NOT NULL,
+				event_type TEXT NOT NULL CHECK(event_type IN ('claimed','heartbeated','released','expired','completed','failed')),
+				reason TEXT,
+				result TEXT,
+				expires_at TEXT,
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY(userId,task_id) REFERENCES agent_tasks(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_coordination_task_events
+			 ON coordination_task_events(userId,task_id,created_at ASC,id ASC)`,
+			`CREATE TABLE IF NOT EXISTS council_proposals (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				question TEXT NOT NULL,
+				options_json TEXT NOT NULL DEFAULT '[]',
+				evidence_json TEXT NOT NULL DEFAULT '[]',
+				council_roles_json TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','decided','expired')),
+				expires_at TEXT,
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_council_proposals
+			 ON council_proposals(userId,status,expires_at,created_at DESC,id ASC)`,
+			`CREATE TABLE IF NOT EXISTS council_votes (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				proposal_id TEXT NOT NULL,
+				council_role TEXT NOT NULL CHECK(council_role IN ('evidence','user_intent','safety','privacy','strategy','operations','adversarial_review')),
+				vote TEXT NOT NULL CHECK(vote IN ('approve','reject','escalate')),
+				reason TEXT NOT NULL,
+				evidence_json TEXT NOT NULL DEFAULT '[]',
+				source_run_id TEXT,
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				UNIQUE(userId,proposal_id,council_role),
+				FOREIGN KEY(userId,proposal_id) REFERENCES council_proposals(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_council_votes
+			 ON council_votes(userId,proposal_id,created_at ASC,id ASC)`,
+			`CREATE TABLE IF NOT EXISTS council_events (
+				id TEXT PRIMARY KEY,
+				userId TEXT NOT NULL,
+				proposal_id TEXT NOT NULL,
+				event_type TEXT NOT NULL CHECK(event_type IN ('proposal_created','voting_started','decision_finalized','proposal_expired')),
+				outcome TEXT CHECK(outcome IS NULL OR outcome IN ('pending','approved','rejected','escalated')),
+				approve_count INTEGER,
+				reject_count INTEGER,
+				escalate_count INTEGER,
+				metadata_json TEXT NOT NULL DEFAULT '{}',
+				actor_id TEXT NOT NULL,
+				created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				FOREIGN KEY(userId,proposal_id) REFERENCES council_proposals(userId,id)
+			)`,
+			`CREATE INDEX IF NOT EXISTS idx_council_events
+			 ON council_events(userId,proposal_id,created_at ASC,id ASC)`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_council_final_decision
+			 ON council_events(userId,proposal_id)
+			 WHERE event_type='decision_finalized'`,
+		],
+	},
 ];
 
 async function sha256Hex(value: string): Promise<string> {

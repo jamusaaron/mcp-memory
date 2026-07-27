@@ -228,6 +228,15 @@ test("synthesis sends a complete bounded JSON contract and omits unsupported sen
 					system,
 					/Do not generate a sensitive claim unless every citation is directly stated and verified/i,
 				);
+				assert.match(
+					system,
+					/never use stated unless the sole cited evidence record has source_type stated/i,
+				);
+				assert.match(
+					system,
+					/claims from health or relationship evidence are sensitive/i,
+				);
+				assert.match(system, /never copy 180 or more characters/i);
 				assert.equal(maxTokens, 3200);
 				return JSON.stringify({
 					claims: [{
@@ -246,7 +255,7 @@ test("synthesis sends a complete bounded JSON contract and omits unsupported sen
 	);
 
 	assert.equal(draft.claims.length, 1);
-	assert.equal(draft.promptVersion, "trusted-artifacts-v3");
+	assert.equal(draft.promptVersion, "trusted-artifacts-v4");
 });
 
 test("strict parsing rejects model summaries with more than six claims", async () => {
@@ -389,11 +398,68 @@ test("invalid model output logs a safe diagnostic stage without source content",
 		{
 			artifact_kind: "living_summary",
 			stage: "json",
+			rule: "json_syntax",
 			output_chars: 8,
 			selected_sources: 1,
 		},
 	]]);
 	assert.doesNotMatch(JSON.stringify(warnings), /Private source content/i);
+});
+
+test("provenance mismatch logs a bounded policy rule without source content", async (t) => {
+	const warnings: unknown[][] = [];
+	const originalWarn = console.warn;
+	console.warn = (...args: unknown[]) => {
+		warnings.push(args);
+	};
+	t.after(() => {
+		console.warn = originalWarn;
+	});
+
+	await assert.rejects(
+		synthesizeArtifact(
+			"living_summary",
+			[
+				evidence("observed-source", {
+					text: "Source content must not reach diagnostics.",
+					sourceType: "observed",
+				}),
+			],
+			1,
+			{} as Env,
+			{
+				callModel: async () =>
+					JSON.stringify({
+						claims: [{
+							section: "projects",
+							text: "A project observation exists.",
+							confidence: 0.9,
+							provenance: "stated",
+							sensitivity: "normal",
+							citations: [{
+								source_kind: "memory",
+								source_id: "observed-source",
+							}],
+						}],
+					}),
+				model: "test-model",
+				now: () => "2026-07-24T00:00:00.000Z",
+			},
+		),
+		/invalid_model_output/,
+	);
+
+	assert.deepEqual(warnings, [[
+		"artifact_model_output_rejected",
+		{
+			artifact_kind: "living_summary",
+			stage: "policy",
+			rule: "provenance_stated_evidence",
+			output_chars: 205,
+			selected_sources: 1,
+		},
+	]]);
+	assert.doesNotMatch(JSON.stringify(warnings), /Source content must not reach diagnostics/i);
 });
 
 test("sensitive inferred claims are rejected", async () => {
@@ -417,7 +483,71 @@ test("sensitive inferred claims are rejected", async () => {
 				})],
 			),
 			/sensitive claims must be directly stated/i,
+	);
+});
+
+test("health-category claims remain protected when a model marks them normal", async () => {
+	await assert.rejects(
+		parseArtifactClaims(
+			"living_summary",
+			JSON.stringify({
+				claims: [{
+					section: "health",
+					text: "The user has a health concern.",
+					confidence: 0.9,
+					provenance: "stated",
+					sensitivity: "normal",
+					citations: [{ source_kind: "memory", source_id: "m1" }],
+				}],
+			}),
+			[evidence("m1", { section: "health" })],
+		),
+		/Sensitive topic must be marked sensitive/i,
+	);
+});
+
+test("technical health checks in project evidence are not personal-health claims", async () => {
+	const claims = await parseArtifactClaims(
+		"living_summary",
+		JSON.stringify({
+			claims: [{
+				section: "projects",
+				text: "The Worker health check endpoint is operating.",
+				confidence: 0.9,
+				provenance: "stated",
+				sensitivity: "normal",
+				citations: [{ source_kind: "memory", source_id: "m1" }],
+			}],
+		}),
+		[evidence("m1", { section: "projects" })],
+	);
+
+	assert.equal(claims.length, 1);
+});
+
+test("plural relationship and lawsuit claims remain sensitive", async () => {
+	for (const text of [
+		"The user values close relationships.",
+		"The user is involved in lawsuits.",
+	]) {
+		await assert.rejects(
+			parseArtifactClaims(
+				"living_summary",
+				JSON.stringify({
+					claims: [{
+						section: "knowledge",
+						text,
+						confidence: 0.9,
+						provenance: "stated",
+						sensitivity: "normal",
+						citations: [{ source_kind: "memory", source_id: "m1" }],
+					}],
+				}),
+				[evidence("m1", { section: "knowledge" })],
+			),
+			/Sensitive topic must be marked sensitive/i,
 		);
+	}
 });
 
 test("claims must be normalized plain text and cannot copy transcript-sized evidence", async () => {

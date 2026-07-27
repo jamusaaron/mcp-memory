@@ -432,7 +432,7 @@ test("a published artifact from an older prompt version is regenerated", async (
 			status: "published",
 			source_watermark: pack.watermark,
 			evidence_generation: 0,
-			prompt_version: "trusted-artifacts-v2",
+			prompt_version: "trusted-artifacts-v3",
 		}),
 	});
 
@@ -459,7 +459,7 @@ test("a candidate from an older prompt version is regenerated instead of reused"
 			validation_state: "validated",
 			source_watermark: pack.watermark,
 			evidence_generation: 0,
-			prompt_version: "trusted-artifacts-v2",
+			prompt_version: "trusted-artifacts-v3",
 		}),
 	});
 

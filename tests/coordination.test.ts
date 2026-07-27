@@ -472,3 +472,254 @@ test("a minimal verified handoff is the first scoped brief item", async (t) => {
 	const brief = await buildCoordinationBrief("u1", "worker-a", [], harness.env, clock);
 	assert.equal(brief.items[0]?.trust, "verified");
 });
+
+test("coordination write gates reject session identifiers and restricted personal data before writes", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	const clock = () => INITIAL_NOW;
+	const prohibited = [
+		{
+			input: handoffInput({
+				summary: "Session ID: 550e8400-e29b-41d4-a716-446655440000",
+			}),
+			value: "Session ID: 550e8400-e29b-41d4-a716-446655440000",
+		},
+		{
+			input: handoffInput({ next_steps: "Passport number: N12345678" }),
+			value: "Passport number: N12345678",
+		},
+		{
+			input: handoffInput({ evidence: ["Bank account number: 12345678"] }),
+			value: "Bank account number: 12345678",
+		},
+		{
+			input: handoffInput({
+				summary: "Contact Jane Doe at +61 412 345 678 about her medical record.",
+			}),
+			value: "Contact Jane Doe at +61 412 345 678 about her medical record.",
+		},
+	];
+	for (const { input, value } of prohibited) {
+		await assert.rejects(
+			() => submitHandoff(input, "u1", "author", harness.env, clock),
+			(error: Error) => {
+				assert.equal(error.message.includes(value), false);
+				return true;
+			},
+		);
+	}
+	assert.equal(
+		(
+			harness.db
+				.prepare("SELECT COUNT(*) AS count FROM coordination_handoffs WHERE userId=?")
+				.get("u1") as { count: number }
+		).count,
+		0,
+	);
+
+	const safe = await submitHandoff(handoffInput(), "u1", "author", harness.env, clock);
+	const privateReason = "The third party medical record is not relevant.";
+	await assert.rejects(
+		() =>
+			reviewHandoff(safe.id, "verified", privateReason, "u1", "reviewer", harness.env, clock),
+		(error: Error) => {
+			assert.equal(error.message.includes(privateReason), false);
+			return true;
+		},
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_handoff_reviews WHERE userId=?",
+				)
+				.get("u1") as { count: number }
+		).count,
+		0,
+	);
+});
+
+test("scoped handoffs and outcomes survive newer unrelated tenant saturation", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	const clock = () => INITIAL_NOW;
+	const insertHandoff = harness.db.prepare(
+		`INSERT INTO coordination_handoffs
+		 (id,userId,from_agent,to_agent,target_role,summary,next_steps,evidence_json,
+		  provenance,confidence,state,expires_at,submitted_at,content_sha256,
+		  actor_id,created_at,updated_at)
+		 VALUES (?,?,?,?,?,?,?,?,? ,?,'verified',NULL,?,?,?, ?,?)`,
+	);
+	insertHandoff.run(
+		"direct-older",
+		"u1",
+		"author",
+		"worker-a",
+		null,
+		"Older direct handoff.",
+		"Continue the assigned work.",
+		"[]",
+		"agent",
+		0.9,
+		"2026-07-27T00:00:00.000Z",
+		"hash-direct",
+		"author",
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+	);
+	insertHandoff.run(
+		"tagged-older",
+		"u1",
+		"author",
+		"worker-z",
+		null,
+		"Older deploy-tag handoff.",
+		"Continue the tagged work.",
+		'["tag:deploy"]',
+		"agent",
+		0.9,
+		"2026-07-27T00:00:00.000Z",
+		"hash-tagged",
+		"author",
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+	);
+	for (let index = 0; index < 101; index += 1) {
+		insertHandoff.run(
+			`noise-handoff-${index}`,
+			"u1",
+			"author",
+			"worker-z",
+			null,
+			"Newer unrelated handoff.",
+			"Do unrelated work.",
+			'["tag:billing"]',
+			"agent",
+			0.9,
+			"2026-07-27T02:00:00.000Z",
+			`hash-noise-${index}`,
+			"author",
+			"2026-07-27T02:00:00.000Z",
+			"2026-07-27T02:00:00.000Z",
+		);
+	}
+	assert.deepEqual(
+		(await listVerifiedHandoffs("u1", harness.env, clock, { agent_id: "worker-a" })).map(
+			({ id }) => id,
+		),
+		["direct-older"],
+	);
+	assert.deepEqual(
+		(await listVerifiedHandoffs("u1", harness.env, clock, { tags: ["deploy"] })).map(
+			({ id }) => id,
+		),
+		["tagged-older"],
+	);
+
+	const insertTask = harness.db.prepare(
+		`INSERT INTO agent_tasks
+		 (id,userId,title,description,status,assigned_agent,claimed_by,result,tags,
+		  created_at,updated_at,completed_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+	);
+	insertTask.run(
+		"outcome-direct-older",
+		"u1",
+		"Older direct outcome",
+		null,
+		"done",
+		"worker-a",
+		null,
+		"The caller's outcome remains relevant.",
+		"[]",
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+	);
+	insertTask.run(
+		"outcome-tagged-older",
+		"u1",
+		"Older deploy outcome",
+		null,
+		"done",
+		"worker-z",
+		null,
+		"The tagged outcome remains relevant.",
+		'["deploy"]',
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+		"2026-07-27T00:00:00.000Z",
+	);
+	for (let index = 0; index < 51; index += 1) {
+		insertTask.run(
+			`noise-outcome-${index}`,
+			"u1",
+			"Newer unrelated outcome",
+			null,
+			"done",
+			"worker-z",
+			null,
+			"Ignore this unrelated outcome.",
+			'["billing"]',
+			"2026-07-27T02:00:00.000Z",
+			"2026-07-27T02:00:00.000Z",
+			"2026-07-27T02:00:00.000Z",
+		);
+	}
+	const brief = await buildCoordinationBrief("u1", "worker-a", ["deploy"], harness.env, clock);
+	const sourceIds = new Set(brief.items.map(({ source_id }) => source_id));
+	assert.ok(sourceIds.has("direct-older"));
+	assert.ok(sourceIds.has("tagged-older"));
+	assert.ok(sourceIds.has("outcome-direct-older"));
+	assert.ok(sourceIds.has("outcome-tagged-older"));
+});
+
+test("brief bounds recalled legacy identifiers, metadata, prompt, and serialized output", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	const clock = () => INITIAL_NOW;
+	const oversizedTaskId = `task-${"x".repeat(20_000)}`;
+	const oversizedLeaseId = `lease-${"y".repeat(20_000)}`;
+	const oversizedText = "detail ".repeat(4_000);
+	harness.db
+		.prepare(
+			`INSERT INTO agent_tasks
+			 (id,userId,title,description,status,assigned_agent,tags,created_at,updated_at)
+			 VALUES (?,?,?,?,?,'worker-a','[]',?,?)`,
+		)
+		.run(
+			oversizedTaskId,
+			"u1",
+			oversizedText,
+			oversizedText,
+			"claimed",
+			INITIAL_NOW,
+			INITIAL_NOW,
+		);
+	harness.db
+		.prepare(
+			`INSERT INTO coordination_task_leases
+			 (id,userId,task_id,lease_id,holder_id,state,leased_at,heartbeat_at,
+			  expires_at,actor_id,created_at,updated_at)
+			 VALUES (?,'u1',?,'opaque','worker-a','active',?,?,?,'worker-a',?,?)`,
+		)
+		.run(
+			oversizedLeaseId,
+			oversizedTaskId,
+			INITIAL_NOW,
+			INITIAL_NOW,
+			"2026-07-28T01:00:00.000Z",
+			INITIAL_NOW,
+			INITIAL_NOW,
+		);
+	const brief = await buildCoordinationBrief("u1", "worker-a", [], harness.env, clock);
+	assert.equal(brief.items[0]?.kind, "lease");
+	assert.ok((brief.items[0]?.source_id.length ?? Number.POSITIVE_INFINITY) <= 192);
+	assert.ok((brief.items[0]?.content.length ?? Number.POSITIVE_INFINITY) <= 600);
+	assert.ok(brief.prompt.length <= 8_000);
+	assert.ok(JSON.stringify(brief).length <= 8_000);
+	assert.equal(brief.total_chars, JSON.stringify(brief).length);
+});

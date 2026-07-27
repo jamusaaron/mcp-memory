@@ -3,7 +3,10 @@ import test from "node:test";
 
 import {
 	buildCoordinationBrief,
+	claimCoordinationTask,
+	heartbeatCoordinationTask,
 	listVerifiedHandoffs,
+	releaseCoordinationTask,
 	reviewHandoff,
 	submitHandoff,
 } from "../src/utils/coordination";
@@ -29,6 +32,660 @@ function handoffInput(
 		...overrides,
 	};
 }
+
+function seedAgentTask(
+	harness: ReturnType<typeof createSqliteD1Harness>,
+	options: {
+		id: string;
+		userId?: string;
+		status?: "open" | "claimed" | "done" | "failed" | "cancelled";
+		assignedAgent?: string | null;
+		claimedBy?: string | null;
+	} = { id: "coordination-task" },
+): void {
+	harness.db
+		.prepare(
+			`INSERT INTO agent_tasks
+			 (id,userId,title,description,status,assigned_agent,claimed_by,result,tags,
+			  created_at,updated_at,completed_at)
+			 VALUES (?,?,?,NULL,?,?,?,NULL,'[]',?,?,NULL)`,
+		)
+		.run(
+			options.id,
+			options.userId ?? "u1",
+			`Task ${options.id}`,
+			options.status ?? "open",
+			options.assignedAgent ?? null,
+			options.claimedBy ?? null,
+			INITIAL_NOW,
+			INITIAL_NOW,
+		);
+}
+
+test("coordination task claim atomically chooses one active tenant-scoped lease", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "lease-task" });
+	const clock = () => INITIAL_NOW;
+
+	const results = await Promise.allSettled([
+		claimCoordinationTask("lease-task", "u1", "worker-a", harness.env, clock),
+		claimCoordinationTask("lease-task", "u1", "worker-b", harness.env, clock),
+	]);
+	const winners = results.filter(
+		(
+			result,
+		): result is PromiseFulfilledResult<Awaited<ReturnType<typeof claimCoordinationTask>>> =>
+			result.status === "fulfilled",
+	);
+	assert.equal(winners.length, 1);
+	const lease = winners[0]?.value;
+	assert.equal(lease?.userId, "u1");
+	assert.equal(lease?.task_id, "lease-task");
+	assert.equal(lease?.state, "active");
+	assert.match(lease?.lease_id ?? "", /^[a-f0-9-]{36}$/);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_leases WHERE userId=? AND task_id=? AND state='active'",
+				)
+				.get("u1", "lease-task") as { count: number }
+		).count,
+		1,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND task_id=? AND event_type='claimed'",
+				)
+				.get("u1", "lease-task") as { count: number }
+		).count,
+		1,
+	);
+	assert.deepEqual(
+		{
+			...(harness.db
+				.prepare("SELECT status,claimed_by,result FROM agent_tasks WHERE id=? AND userId=?")
+				.get("lease-task", "u1") as Record<string, unknown>),
+		},
+		{ status: "open", claimed_by: null, result: null },
+	);
+});
+
+test("coordination lease heartbeat requires its current holder and extends from server time", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "heartbeat-task" });
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	const claimed = await claimCoordinationTask(
+		"heartbeat-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	current = "2026-07-27T01:01:00.000Z";
+	await assert.rejects(
+		() => heartbeatCoordinationTask(claimed.lease_id, "u1", "worker-b", harness.env, clock),
+		/current coordination lease/i,
+	);
+	const renewed = await heartbeatCoordinationTask(
+		claimed.lease_id,
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	assert.equal(renewed.lease_id, claimed.lease_id);
+	assert.equal(renewed.heartbeat_at, current);
+	assert.ok(renewed.expires_at > claimed.expires_at);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND task_id=? AND event_type='heartbeated'",
+				)
+				.get("u1", "heartbeat-task") as { count: number }
+		).count,
+		1,
+	);
+});
+
+test("coordination lease release records a bounded terminal event without rewriting the legacy task", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "release-task" });
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	const claimed = await claimCoordinationTask(
+		"release-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	current = "2026-07-27T01:01:00.000Z";
+	await assert.rejects(
+		() =>
+			releaseCoordinationTask(claimed.lease_id, "u1", "worker-b", harness.env, clock, {
+				final_state: "completed",
+				result: "Checks completed.",
+			}),
+		/current coordination lease/i,
+	);
+	const released = await releaseCoordinationTask(
+		claimed.lease_id,
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+		{
+			final_state: "completed",
+			reason: "Verified completion.",
+			result: "Checks completed.",
+		},
+	);
+	assert.equal(released.state, "completed");
+	assert.equal(released.released_at, current);
+	assert.deepEqual(
+		{
+			...(harness.db
+				.prepare(
+					`SELECT event_type,reason,result,actor_id
+					 FROM coordination_task_events
+					 WHERE userId=? AND task_id=? AND lease_id=? AND event_type='completed'`,
+				)
+				.get("u1", "release-task", claimed.lease_id) as Record<string, unknown>),
+		},
+		{
+			event_type: "completed",
+			reason: "Verified completion.",
+			result: "Checks completed.",
+			actor_id: "worker-a",
+		},
+	);
+	assert.deepEqual(
+		{
+			...(harness.db
+				.prepare("SELECT status,claimed_by,result FROM agent_tasks WHERE id=? AND userId=?")
+				.get("release-task", "u1") as Record<string, unknown>),
+		},
+		{ status: "open", claimed_by: null, result: null },
+	);
+	await assert.rejects(
+		() => heartbeatCoordinationTask(claimed.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+});
+
+test("coordination lease release defaults safely and rejects cross-tenant lease IDs", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "default-release-task" });
+	seedAgentTask(harness, { id: "failed-release-task" });
+	const clock = () => INITIAL_NOW;
+	const defaultLease = await claimCoordinationTask(
+		"default-release-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	await assert.rejects(
+		() => releaseCoordinationTask(defaultLease.lease_id, "u2", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND lease_id=?",
+				)
+				.get("u1", defaultLease.lease_id) as { count: number }
+		).count,
+		1,
+	);
+	const released = await releaseCoordinationTask(
+		defaultLease.lease_id,
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	assert.equal(released.state, "released");
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT event_type FROM coordination_task_events WHERE userId=? AND lease_id=? AND event_type='released'",
+				)
+				.get("u1", defaultLease.lease_id) as { event_type: string }
+		).event_type,
+		"released",
+	);
+
+	const failedLease = await claimCoordinationTask(
+		"failed-release-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	const failed = await releaseCoordinationTask(
+		failedLease.lease_id,
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+		{ final_state: "failed", reason: "Dependency was unavailable.", result: "Retry later." },
+	);
+	assert.equal(failed.state, "failed");
+	assert.deepEqual(
+		{
+			...(harness.db
+				.prepare(
+					"SELECT event_type,reason,result FROM coordination_task_events WHERE userId=? AND lease_id=? AND event_type='failed'",
+				)
+				.get("u1", failedLease.lease_id) as Record<string, unknown>),
+		},
+		{
+			event_type: "failed",
+			reason: "Dependency was unavailable.",
+			result: "Retry later.",
+		},
+	);
+});
+
+test("terminal or unavailable legacy tasks stop lease renewal and finalization", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "terminal-after-claim" });
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	const lease = await claimCoordinationTask(
+		"terminal-after-claim",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	harness.db
+		.prepare("UPDATE agent_tasks SET status='done' WHERE id=? AND userId=?")
+		.run("terminal-after-claim", "u1");
+	current = "2026-07-27T01:01:00.000Z";
+	const brief = await buildCoordinationBrief("u1", "worker-a", [], harness.env, clock);
+	assert.equal(
+		brief.items.some((item) => item.kind === "lease" && item.source_id === lease.id),
+		false,
+	);
+	await assert.rejects(
+		() => heartbeatCoordinationTask(lease.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+	await assert.rejects(
+		() => releaseCoordinationTask(lease.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+	assert.deepEqual(
+		{
+			...(harness.db
+				.prepare(
+					"SELECT state,heartbeat_at FROM coordination_task_leases WHERE userId=? AND lease_id=?",
+				)
+				.get("u1", lease.lease_id) as Record<string, unknown>),
+		},
+		{ state: "active", heartbeat_at: INITIAL_NOW },
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND lease_id=?",
+				)
+				.get("u1", lease.lease_id) as { count: number }
+		).count,
+		1,
+	);
+
+	const partial = createSqliteD1Harness();
+	t.after(() => partial.close());
+	await initializeSqliteD1(partial.env);
+	seedAgentTask(partial, { id: "missing-after-claim" });
+	const partialLease = await claimCoordinationTask(
+		"missing-after-claim",
+		"u1",
+		"worker-a",
+		partial.env,
+		clock,
+	);
+	partial.db.exec("PRAGMA foreign_keys=OFF; DROP TABLE agent_tasks; PRAGMA foreign_keys=ON");
+	await assert.rejects(
+		() =>
+			heartbeatCoordinationTask(partialLease.lease_id, "u1", "worker-a", partial.env, clock),
+		/task board is unavailable/i,
+	);
+	await assert.rejects(
+		() => releaseCoordinationTask(partialLease.lease_id, "u1", "worker-a", partial.env, clock),
+		/task board is unavailable/i,
+	);
+	assert.equal(
+		(
+			partial.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND lease_id=?",
+				)
+				.get("u1", partialLease.lease_id) as { count: number }
+		).count,
+		1,
+	);
+});
+
+test("same-timestamp lease retries cannot append an event without a transition", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "same-time-heartbeat" });
+	seedAgentTask(harness, { id: "same-time-release" });
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	const heartbeatLease = await claimCoordinationTask(
+		"same-time-heartbeat",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	await assert.rejects(
+		() =>
+			heartbeatCoordinationTask(
+				heartbeatLease.lease_id,
+				"u1",
+				"worker-a",
+				harness.env,
+				clock,
+			),
+		/current coordination lease/i,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare("SELECT COUNT(*) AS count FROM coordination_task_events WHERE lease_id=?")
+				.get(heartbeatLease.lease_id) as { count: number }
+		).count,
+		1,
+	);
+
+	current = "2026-07-27T01:01:00.000Z";
+	await heartbeatCoordinationTask(heartbeatLease.lease_id, "u1", "worker-a", harness.env, clock);
+	harness.db
+		.prepare("UPDATE agent_tasks SET status='done' WHERE id=? AND userId=?")
+		.run("same-time-heartbeat", "u1");
+	await assert.rejects(
+		() =>
+			heartbeatCoordinationTask(
+				heartbeatLease.lease_id,
+				"u1",
+				"worker-a",
+				harness.env,
+				clock,
+			),
+		/current coordination lease/i,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare("SELECT COUNT(*) AS count FROM coordination_task_events WHERE lease_id=?")
+				.get(heartbeatLease.lease_id) as { count: number }
+		).count,
+		2,
+	);
+
+	const releaseLease = await claimCoordinationTask(
+		"same-time-release",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	await releaseCoordinationTask(releaseLease.lease_id, "u1", "worker-a", harness.env, clock, {
+		final_state: "completed",
+	});
+	await assert.rejects(
+		() =>
+			releaseCoordinationTask(releaseLease.lease_id, "u1", "worker-a", harness.env, clock, {
+				final_state: "completed",
+			}),
+		/current coordination lease/i,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare("SELECT COUNT(*) AS count FROM coordination_task_events WHERE lease_id=?")
+				.get(releaseLease.lease_id) as { count: number }
+		).count,
+		2,
+	);
+});
+
+test("lease storage failures do not expose raw database detail", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "storage-error-task" });
+	const clock = () => INITIAL_NOW;
+	const rawMessage = "D1_ERROR: secret_internal_table.internal_key";
+	const failingEnv = {
+		...harness.env,
+		DB: {
+			prepare: harness.env.DB.prepare.bind(harness.env.DB),
+			batch: async () => {
+				throw new Error(rawMessage);
+			},
+		},
+	} as unknown as Env;
+	const expectSafeStorageError = async (operation: () => Promise<unknown>) => {
+		await assert.rejects(operation, (error: Error) => {
+			assert.match(
+				error.message,
+				/coordination (?:task board|lease storage) is unavailable/i,
+			);
+			assert.doesNotMatch(error.message, /secret_internal_table|internal_key/i);
+			return true;
+		});
+	};
+
+	await expectSafeStorageError(() =>
+		claimCoordinationTask("storage-error-task", "u1", "worker-a", failingEnv, clock),
+	);
+	const lease = await claimCoordinationTask(
+		"storage-error-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	await expectSafeStorageError(() =>
+		heartbeatCoordinationTask(lease.lease_id, "u1", "worker-a", failingEnv, clock),
+	);
+	await expectSafeStorageError(() =>
+		releaseCoordinationTask(lease.lease_id, "u1", "worker-a", failingEnv, clock),
+	);
+});
+
+test("expired coordination leases recover once and leave the stale lease unusable", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "recovery-task" });
+	let current = INITIAL_NOW;
+	const clock = () => current;
+	const original = await claimCoordinationTask(
+		"recovery-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	current = "2026-07-27T01:06:00.000Z";
+	await assert.rejects(
+		() => heartbeatCoordinationTask(original.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+	await assert.rejects(
+		() => releaseCoordinationTask(original.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+
+	const attempts = await Promise.allSettled([
+		claimCoordinationTask("recovery-task", "u1", "worker-b", harness.env, clock),
+		claimCoordinationTask("recovery-task", "u1", "worker-c", harness.env, clock),
+	]);
+	const winners = attempts.filter(
+		(
+			result,
+		): result is PromiseFulfilledResult<Awaited<ReturnType<typeof claimCoordinationTask>>> =>
+			result.status === "fulfilled",
+	);
+	assert.equal(winners.length, 1);
+	const recovered = winners[0]?.value;
+	assert.notEqual(recovered?.lease_id, original.lease_id);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND task_id=? AND event_type='expired'",
+				)
+				.get("u1", "recovery-task") as { count: number }
+		).count,
+		1,
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND task_id=? AND event_type='claimed'",
+				)
+				.get("u1", "recovery-task") as { count: number }
+		).count,
+		2,
+	);
+	assert.deepEqual(
+		harness.db
+			.prepare(
+				`SELECT event_type FROM coordination_task_events
+				 WHERE userId=? AND task_id=? ORDER BY created_at ASC,id ASC`,
+			)
+			.all("u1", "recovery-task")
+			.map((row) => (row as { event_type: string }).event_type),
+		["claimed", "expired", "claimed"],
+	);
+	await assert.rejects(
+		() => heartbeatCoordinationTask(original.lease_id, "u1", "worker-a", harness.env, clock),
+		/current coordination lease/i,
+	);
+});
+
+test("coordination leases fail closed for unsafe, terminal, foreign, missing, and partial task boards", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	seedAgentTask(harness, { id: "foreign-task", userId: "u1" });
+	seedAgentTask(harness, { id: "terminal-task", status: "done" });
+	seedAgentTask(harness, { id: "unsafe-release-task" });
+	const clock = () => INITIAL_NOW;
+
+	await assert.rejects(
+		() => claimCoordinationTask("foreign-task", "u2", "worker-b", harness.env, clock),
+		/not available/i,
+	);
+	await assert.rejects(
+		() => claimCoordinationTask("terminal-task", "u1", "worker-a", harness.env, clock),
+		/not available/i,
+	);
+	await assert.rejects(
+		() => claimCoordinationTask("missing-task", "u1", "worker-a", harness.env, clock),
+		/not available/i,
+	);
+	assert.equal(
+		(
+			harness.db.prepare("SELECT COUNT(*) AS count FROM coordination_task_leases").get() as {
+				count: number;
+			}
+		).count,
+		0,
+	);
+	assert.equal(
+		(
+			harness.db.prepare("SELECT COUNT(*) AS count FROM coordination_task_events").get() as {
+				count: number;
+			}
+		).count,
+		0,
+	);
+
+	const active = await claimCoordinationTask(
+		"unsafe-release-task",
+		"u1",
+		"worker-a",
+		harness.env,
+		clock,
+	);
+	const secret = "access_token=coordination-lease-secret";
+	await assert.rejects(
+		() =>
+			releaseCoordinationTask(active.lease_id, "u1", "worker-a", harness.env, clock, {
+				final_state: "failed",
+				reason: secret,
+			}),
+		(error: Error) => {
+			assert.doesNotMatch(error.message, /coordination-lease-secret/);
+			return true;
+		},
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare("SELECT state FROM coordination_task_leases WHERE userId=? AND lease_id=?")
+				.get("u1", active.lease_id) as { state: string }
+		).state,
+		"active",
+	);
+	assert.equal(
+		(
+			harness.db
+				.prepare(
+					"SELECT COUNT(*) AS count FROM coordination_task_events WHERE userId=? AND task_id=?",
+				)
+				.get("u1", "unsafe-release-task") as { count: number }
+		).count,
+		1,
+	);
+
+	const partial = createSqliteD1Harness();
+	t.after(() => partial.close());
+	await initializeSqliteD1(partial.env);
+	partial.db.exec("PRAGMA foreign_keys=OFF; DROP TABLE agent_tasks; PRAGMA foreign_keys=ON");
+	await assert.rejects(
+		() => claimCoordinationTask("absent-task", "u1", "worker-a", partial.env, clock),
+		/task board is unavailable/i,
+	);
+	assert.equal(
+		(
+			partial.db.prepare("SELECT COUNT(*) AS count FROM coordination_task_events").get() as {
+				count: number;
+			}
+		).count,
+		0,
+	);
+});
 
 test("submitted handoffs retain immutable payloads and corrections append", async (t) => {
 	const harness = createSqliteD1Harness();

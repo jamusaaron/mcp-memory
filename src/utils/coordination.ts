@@ -4,6 +4,7 @@ import {
 	COORDINATION_PROVENANCE,
 	type CoordinationHandoff,
 	type CoordinationHandoffReview,
+	type CoordinationLease,
 	type CoordinationProvenance,
 } from "../types";
 import { canonicalJson, containsHardSecret, sha256Hex } from "./artifact-synthesis";
@@ -22,6 +23,7 @@ const MAX_BRIEF_ITEM_CHARS = 600;
 const MAX_RECALLED_RAW_CHARS = MAX_BRIEF_ITEM_CHARS * 4;
 const MAX_RECALLED_METADATA_CHARS = 160;
 const MAX_RECALLED_JSON_CHARS = 4_096;
+const COORDINATION_LEASE_TTL_MS = 5 * 60 * 1_000;
 
 const TRANSCRIPT_SHAPE =
 	/(?:^|\n)\s*(?:user|assistant|system|developer|tool)\s*:|<\s*\/?\s*(?:user|assistant|system|developer|tool)\s*>|<\|(?:user|assistant|system|developer|tool)\|>/i;
@@ -78,6 +80,12 @@ export type CoordinationBrief = {
 	total_chars: number;
 	truncated: boolean;
 	prompt: string;
+};
+
+export type ReleaseCoordinationTaskOptions = {
+	final_state?: Extract<CoordinationLease["state"], "released" | "completed" | "failed">;
+	reason?: string | null;
+	result?: string | null;
 };
 
 function nowIso(clock: CoordinationClock): string {
@@ -221,6 +229,24 @@ function rowToReview(row: Record<string, unknown>): CoordinationHandoffReview {
 	};
 }
 
+function rowToLease(row: Record<string, unknown>): CoordinationLease {
+	return {
+		id: String(row.id),
+		userId: String(row.userId),
+		task_id: String(row.task_id),
+		lease_id: String(row.lease_id),
+		holder_id: String(row.holder_id),
+		state: row.state as CoordinationLease["state"],
+		leased_at: String(row.leased_at),
+		heartbeat_at: String(row.heartbeat_at),
+		expires_at: String(row.expires_at),
+		released_at: row.released_at === null ? null : String(row.released_at),
+		actor_id: String(row.actor_id),
+		created_at: String(row.created_at),
+		updated_at: String(row.updated_at),
+	};
+}
+
 function boundedLimit(value: number | undefined, maximum: number): number {
 	if (value === undefined || !Number.isFinite(value)) return maximum;
 	return Math.min(maximum, Math.max(1, Math.trunc(value)));
@@ -237,6 +263,25 @@ function validateExpiry(value: string | null | undefined, now: string): string |
 		throw new Error("expires_at must be later than the server time");
 	}
 	return normalized;
+}
+
+function leaseExpiry(timestamp: string): string {
+	return new Date(new Date(timestamp).getTime() + COORDINATION_LEASE_TTL_MS).toISOString();
+}
+
+function throwSafeLeaseStorageError(error: unknown): never {
+	if (error instanceof Error && /no such table: (?:main\.)?agent_tasks/i.test(error.message)) {
+		throw new Error("Coordination task board is unavailable");
+	}
+	throw new Error("Coordination lease storage is unavailable");
+}
+
+async function useLeaseStorage<T>(operation: () => Promise<T>): Promise<T> {
+	try {
+		return await operation();
+	} catch (error) {
+		throwSafeLeaseStorageError(error);
+	}
 }
 
 export async function submitHandoff(
@@ -434,6 +479,284 @@ export async function reviewHandoff(
 		.first();
 	if (!row) throw new Error("Handoff review did not produce a row");
 	return rowToReview(row as Record<string, unknown>);
+}
+
+export async function claimCoordinationTask(
+	taskId: string,
+	userId: string,
+	actorId: string,
+	env: Env,
+	clock: CoordinationClock,
+): Promise<CoordinationLease> {
+	const task = safeIdentifier(taskId, "taskId") as string;
+	const user = safeIdentifier(userId, "userId") as string;
+	const actor = safeIdentifier(actorId, "actorId") as string;
+	const timestamp = nowIso(clock);
+	const expiresAt = leaseExpiry(timestamp);
+	const leaseId = uuidv4();
+	const leaseRecordId = uuidv4();
+	// The history index ties equal timestamps by id. Keep recovery's expired
+	// record ahead of its replacement claim without changing the frozen schema.
+	const [expiredEventId, claimedEventId] = [uuidv4(), uuidv4()].sort();
+	const results = await useLeaseStorage(() =>
+		env.DB.batch([
+			env.DB.prepare(
+				`INSERT INTO coordination_task_events
+				 (id,userId,task_id,lease_id,event_type,reason,result,expires_at,actor_id,created_at,updated_at)
+				 SELECT ?,l.userId,l.task_id,l.lease_id,'expired',NULL,NULL,l.expires_at,?,?,?
+				 FROM coordination_task_leases l
+				 JOIN agent_tasks t ON t.userId=l.userId AND t.id=l.task_id
+				 WHERE l.userId=? AND l.task_id=? AND l.state='active' AND l.expires_at<=?
+				   AND t.status NOT IN ('done','failed','cancelled')`,
+			).bind(expiredEventId, actor, timestamp, timestamp, user, task, timestamp),
+			env.DB.prepare(
+				`INSERT INTO coordination_task_leases
+				 (id,userId,task_id,lease_id,holder_id,state,leased_at,heartbeat_at,
+				  expires_at,released_at,actor_id,created_at,updated_at)
+				 SELECT ?,t.userId,t.id,?,?,'active',?,?,?,NULL,?,?,?
+				 FROM agent_tasks t
+				 WHERE t.userId=? AND t.id=? AND t.status NOT IN ('done','failed','cancelled')
+				 ON CONFLICT(userId,task_id) DO UPDATE SET
+				  id=excluded.id,
+				  lease_id=excluded.lease_id,
+				  holder_id=excluded.holder_id,
+				  state='active',
+				  leased_at=excluded.leased_at,
+				  heartbeat_at=excluded.heartbeat_at,
+				  expires_at=excluded.expires_at,
+				  released_at=NULL,
+				  actor_id=excluded.actor_id,
+				  created_at=excluded.created_at,
+				  updated_at=excluded.updated_at
+				 WHERE coordination_task_leases.state<>'active'
+				    OR coordination_task_leases.expires_at<=?`,
+			).bind(
+				leaseRecordId,
+				leaseId,
+				actor,
+				timestamp,
+				timestamp,
+				expiresAt,
+				actor,
+				timestamp,
+				timestamp,
+				user,
+				task,
+				timestamp,
+			),
+			env.DB.prepare(
+				`INSERT INTO coordination_task_events
+				 (id,userId,task_id,lease_id,event_type,reason,result,expires_at,actor_id,created_at,updated_at)
+				 SELECT ?,l.userId,l.task_id,l.lease_id,'claimed',NULL,NULL,l.expires_at,?,?,?
+				 FROM coordination_task_leases l
+				 WHERE l.userId=? AND l.task_id=? AND l.lease_id=? AND l.holder_id=?
+				   AND l.state='active' AND l.updated_at=?`,
+			).bind(
+				claimedEventId,
+				actor,
+				timestamp,
+				timestamp,
+				user,
+				task,
+				leaseId,
+				actor,
+				timestamp,
+			),
+		]),
+	);
+	if (
+		Number(results[1]?.meta.changes ?? 0) !== 1 ||
+		Number(results[2]?.meta.changes ?? 0) !== 1
+	) {
+		throw new Error("Coordination task is not available for lease");
+	}
+	const row = await useLeaseStorage(() =>
+		env.DB.prepare(
+			`SELECT * FROM coordination_task_leases
+				 WHERE userId=? AND task_id=? AND lease_id=? AND holder_id=? AND state='active'`,
+		)
+			.bind(user, task, leaseId, actor)
+			.first(),
+	);
+	if (!row) throw new Error("Coordination lease was not created");
+	return rowToLease(row as Record<string, unknown>);
+}
+
+export async function heartbeatCoordinationTask(
+	leaseId: string,
+	userId: string,
+	actorId: string,
+	env: Env,
+	clock: CoordinationClock,
+): Promise<CoordinationLease> {
+	const lease = safeIdentifier(leaseId, "leaseId") as string;
+	const user = safeIdentifier(userId, "userId") as string;
+	const actor = safeIdentifier(actorId, "actorId") as string;
+	const timestamp = nowIso(clock);
+	const expiresAt = leaseExpiry(timestamp);
+	const eventId = uuidv4();
+	// `id` belongs to the mutable projection. Rotating it gives the paired
+	// immutable event a transaction-specific compare-and-set marker.
+	const heartbeatProjectionId = uuidv4();
+	const results = await useLeaseStorage(() =>
+		env.DB.batch([
+			env.DB.prepare(
+				`UPDATE coordination_task_leases
+			 SET id=?,heartbeat_at=?,expires_at=?,actor_id=?,updated_at=?
+			 WHERE userId=? AND lease_id=? AND holder_id=? AND state='active' AND expires_at>?
+			   AND heartbeat_at<?
+			   AND expires_at<?
+			   AND EXISTS (
+			    SELECT 1 FROM agent_tasks t
+			    WHERE t.userId=coordination_task_leases.userId AND t.id=coordination_task_leases.task_id
+			      AND t.status NOT IN ('done','failed','cancelled')
+			   )`,
+			).bind(
+				heartbeatProjectionId,
+				timestamp,
+				expiresAt,
+				actor,
+				timestamp,
+				user,
+				lease,
+				actor,
+				timestamp,
+				timestamp,
+				expiresAt,
+			),
+			env.DB.prepare(
+				`INSERT INTO coordination_task_events
+			 (id,userId,task_id,lease_id,event_type,reason,result,expires_at,actor_id,created_at,updated_at)
+			 SELECT ?,l.userId,l.task_id,l.lease_id,'heartbeated',NULL,NULL,l.expires_at,?,?,?
+			 FROM coordination_task_leases l
+			 JOIN agent_tasks t ON t.userId=l.userId AND t.id=l.task_id
+			 WHERE l.id=? AND l.userId=? AND l.lease_id=? AND l.holder_id=? AND l.state='active'
+			   AND l.heartbeat_at=? AND l.expires_at=? AND l.actor_id=? AND l.updated_at=?`,
+			).bind(
+				eventId,
+				actor,
+				timestamp,
+				timestamp,
+				heartbeatProjectionId,
+				user,
+				lease,
+				actor,
+				timestamp,
+				expiresAt,
+				actor,
+				timestamp,
+			),
+		]),
+	);
+	if (
+		Number(results[0]?.meta.changes ?? 0) !== 1 ||
+		Number(results[1]?.meta.changes ?? 0) !== 1
+	) {
+		throw new Error("Not the current coordination lease");
+	}
+	const row = await useLeaseStorage(() =>
+		env.DB.prepare(
+			`SELECT * FROM coordination_task_leases
+				 WHERE id=? AND userId=? AND lease_id=? AND holder_id=? AND state='active'`,
+		)
+			.bind(heartbeatProjectionId, user, lease, actor)
+			.first(),
+	);
+	if (!row) throw new Error("Coordination lease heartbeat was not recorded");
+	return rowToLease(row as Record<string, unknown>);
+}
+
+export async function releaseCoordinationTask(
+	leaseId: string,
+	userId: string,
+	actorId: string,
+	env: Env,
+	clock: CoordinationClock,
+	options: ReleaseCoordinationTaskOptions = {},
+): Promise<CoordinationLease> {
+	const lease = safeIdentifier(leaseId, "leaseId") as string;
+	const user = safeIdentifier(userId, "userId") as string;
+	const actor = safeIdentifier(actorId, "actorId") as string;
+	const finalState = options.final_state ?? "released";
+	if (finalState !== "released" && finalState !== "completed" && finalState !== "failed") {
+		throw new Error("Lease final_state must be released, completed, or failed");
+	}
+	const reason =
+		options.reason === undefined || options.reason === null
+			? null
+			: assertSafeCoordinationText(options.reason, "lease reason", MAX_REVIEW_REASON_CHARS);
+	const result =
+		options.result === undefined || options.result === null
+			? null
+			: assertSafeCoordinationText(options.result, "lease result", MAX_NEXT_STEPS_CHARS);
+	const timestamp = nowIso(clock);
+	const eventId = uuidv4();
+	const releaseProjectionId = uuidv4();
+	const results = await useLeaseStorage(() =>
+		env.DB.batch([
+			env.DB.prepare(
+				`UPDATE coordination_task_leases
+			 SET id=?,state=?,released_at=?,actor_id=?,updated_at=?
+			 WHERE userId=? AND lease_id=? AND holder_id=? AND state='active' AND expires_at>?
+			   AND EXISTS (
+			    SELECT 1 FROM agent_tasks t
+			    WHERE t.userId=coordination_task_leases.userId AND t.id=coordination_task_leases.task_id
+			      AND t.status NOT IN ('done','failed','cancelled')
+			   )`,
+			).bind(
+				releaseProjectionId,
+				finalState,
+				timestamp,
+				actor,
+				timestamp,
+				user,
+				lease,
+				actor,
+				timestamp,
+			),
+			env.DB.prepare(
+				`INSERT INTO coordination_task_events
+			 (id,userId,task_id,lease_id,event_type,reason,result,expires_at,actor_id,created_at,updated_at)
+			 SELECT ?,l.userId,l.task_id,l.lease_id,?,?,?,l.expires_at,?,?,?
+			 FROM coordination_task_leases l
+			 JOIN agent_tasks t ON t.userId=l.userId AND t.id=l.task_id
+			 WHERE l.id=? AND l.userId=? AND l.lease_id=? AND l.holder_id=? AND l.state=?
+			   AND l.released_at=? AND l.actor_id=? AND l.updated_at=?`,
+			).bind(
+				eventId,
+				finalState,
+				reason,
+				result,
+				actor,
+				timestamp,
+				timestamp,
+				releaseProjectionId,
+				user,
+				lease,
+				actor,
+				finalState,
+				timestamp,
+				actor,
+				timestamp,
+			),
+		]),
+	);
+	if (
+		Number(results[0]?.meta.changes ?? 0) !== 1 ||
+		Number(results[1]?.meta.changes ?? 0) !== 1
+	) {
+		throw new Error("Not the current coordination lease");
+	}
+	const row = await useLeaseStorage(() =>
+		env.DB.prepare(
+			`SELECT * FROM coordination_task_leases
+				 WHERE id=? AND userId=? AND lease_id=? AND holder_id=? AND state=?`,
+		)
+			.bind(releaseProjectionId, user, lease, actor, finalState)
+			.first(),
+	);
+	if (!row) throw new Error("Coordination lease release was not recorded");
+	return rowToLease(row as Record<string, unknown>);
 }
 
 function normalizedTags(tags: readonly string[] | undefined): string[] {
@@ -677,6 +1000,7 @@ export async function buildCoordinationBrief(
 			 JOIN agent_tasks t ON t.userId=l.userId AND t.id=l.task_id
 			 WHERE l.userId=? AND l.holder_id=? AND l.state='active'
 			   AND l.expires_at>?
+			   AND t.status NOT IN ('done','failed','cancelled')
 			 ORDER BY l.expires_at ASC,l.id ASC
 			 LIMIT 8`,
 		)

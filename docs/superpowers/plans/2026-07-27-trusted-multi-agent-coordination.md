@@ -140,7 +140,7 @@ git commit -m "feat: add trusted coordination handoffs"
 
 **Interfaces:**
 - Produces `claimCoordinationTask`, `heartbeatCoordinationTask`, and `releaseCoordinationTask`.
-- Lease operations require the opaque `leaseId`, current actor, and injected server time; they return only the active lease or a policy error.
+- Lease operations require the opaque `leaseId`, current actor, and injected server time; they return only the active lease or a policy error. `releaseCoordinationTask` accepts a bounded final state of `released`, `completed`, or `failed` (default `released`) plus an optional bounded reason/result, so the existing ten-tool public surface covers recovery and terminal history without changing legacy task tools.
 
 - [ ] **Step 1: Add failing lease tests**
 
@@ -151,7 +151,7 @@ clock.advance(61_000);
 await assert.rejects(() => heartbeatCoordinationTask(first.leaseId, "u1", "worker-a", env, clock));
 ```
 
-Cover one-winner claims, matching holder/lease requirements, expiry recovery exactly once, stale lease rejection, and tenant boundary failures.
+Cover one-winner claims, matching holder/lease requirements, expiry recovery exactly once, stale lease rejection, terminal release/completion/failure history, task-existence checks, and tenant boundary failures. Include an adversarial partial-schema case that fails closed when legacy `agent_tasks` is unavailable.
 
 - [ ] **Step 2: Run the focused test to verify it fails**
 
@@ -161,7 +161,7 @@ Expected: FAIL because lease functions do not exist.
 
 - [ ] **Step 3: Implement atomic lease transitions**
 
-Use D1 conditional writes keyed by `(userId, task_id)`, server-generated `lease_id`, `heartbeat_at`, and `expires_at`. Claims succeed only when no active lease exists or its expiry is before server `now`. Heartbeat, release, completion, and failure require matching actor and lease. Record every transition in `coordination_task_events`; expiry reopens task history without deleting it.
+Treat `coordination_task_leases` as the atomically updated current-lease projection and `coordination_task_events` as the append-only history. Use D1 conditional writes keyed by `(userId, task_id)`—an `INSERT … ON CONFLICT … DO UPDATE … WHERE` or equivalent compare-and-set—not a read-then-write claim. Server-generate `lease_id`, `heartbeat_at`, and `expires_at`. Claims require a same-tenant non-terminal legacy task and succeed only when no active lease exists or its expiry is before server `now`; an expiry event is written exactly once before the successful reclaim. Heartbeat and release/final-state transitions require matching actor and lease. Do not mutate legacy `agent_tasks` fields: old tools remain compatibility surfaces and new lease operations fail closed against partial legacy schemas.
 
 - [ ] **Step 4: Run focused tests**
 
@@ -179,7 +179,7 @@ git commit -m "feat: add recoverable coordination leases"
 ### Task 4: Implement the seven-bot council and final decision artifacts
 
 **Files:**
-- Modify: `src/utils/coordination.ts`, `tests/coordination.test.ts`
+- Modify: `src/types.ts`, `src/utils/coordination.ts`, `tests/coordination.test.ts`
 - Test: `tests/coordination.test.ts`
 
 **Interfaces:**
@@ -194,7 +194,7 @@ assert.equal(result.votes.length, 7);
 assert.equal((await getCouncilDecision(proposal.id, "u1", env, clock)).outcome, "approved");
 ```
 
-Add fixed cases: 5 approve + 2 reject = approved; 3 reject = rejected; any escalation = escalated; duplicate role vote rejects; a proposal author cannot vote; reasons/evidence IDs and dissent survive retrieval.
+Add fixed cases: 5 approve + 2 reject = approved; 3 reject = rejected; any escalation = escalated; duplicate role vote rejects; a proposal author cannot vote; malformed/fenced/unknown-field model output leaves no votes; a failed seven-role run is all-or-nothing; a concurrent duplicate run returns the existing decision; reasons/evidence IDs and dissent survive retrieval. Also prove a new proposal can supersede an earlier decision without overwriting it.
 
 - [ ] **Step 2: Run focused tests to verify they fail**
 
@@ -204,7 +204,7 @@ Expected: FAIL because council utilities do not exist.
 
 - [ ] **Step 3: Implement council policy and audit storage**
 
-Create proposals with a bounded question/options/evidence list and all seven fixed roles. Run the seven roles only through a server-owned council runner using a strict structured-output parser; reject malformed model output rather than inventing a vote. Snapshot their role list, enforce one vote per role, immutable reasons, expiry, and exact final math. Persist one final decision event only after the seventh vote; expose `pending`, `approved`, `rejected`, or `escalated`. Never dispatch an action from an outcome.
+Create proposals with a bounded question/options/evidence list and all seven fixed roles. A new proposal may reference a prior proposal only as an immutable `supersedes_proposal_id` stored in the existing proposal-created event metadata; it never edits or re-votes the older proposal. Run each role only through a dedicated server-owned council runner with a fixed `Record<CouncilRole, prompt>` and direct `llmCallSystem`; do not reuse legacy `runRoleAgent`, caller-selected roles, or legacy memory-context formatting. Build any supplied evidence as bounded, tenant-scoped, verified/unexpired, labelled untrusted JSON with a fixed no-follow/no-tool system instruction. Accept only `JSON.parse(output.trim())` that validates against a strict Zod schema `{ vote, reason, evidence_ids }`: reject prose, fenced JSON, unknown fields, invalid enums, unsafe/overlong reasons, and evidence IDs absent from the proposal. Gather and validate all seven outputs before one atomic D1 batch writes seven immutable votes, a compact deterministic synthesis in `council_events.metadata_json`, the final event, and the proposal status. On malformed output or model failure, persist no vote or decision; on a duplicate/concurrent completion, re-read and return the existing final artifact. Persist every council vote as `actor_id = council:<fixed-role>`, enforce one vote per role and exact final math, and expose `pending`, `approved`, `rejected`, or `escalated` from persisted artifacts only. Never dispatch an action from an outcome.
 
 - [ ] **Step 4: Run focused tests**
 
@@ -241,7 +241,7 @@ Expected: FAIL because the tool module and surface snapshot lack the new names.
 
 - [ ] **Step 3: Implement handler schemas and registration**
 
-Register `registerCoordinationTools` in `src/mcp.ts`. Each mutation uses the server user scope and an explicit actor label solely for audit attribution; do not treat a user-provided label as authentication. Each handler returns `toolText`/`toolError` with concise, structured fields. Add exact new names to `EXPECTED_TOOL_NAMES` and update the expected count.
+Register `registerCoordinationTools` in `src/mcp.ts`. Each mutation uses the server user scope and an explicit actor label solely for audit attribution; do not treat a user-provided label as authentication. `coordination_task_release` exposes the bounded `final_state`/reason/result contract from Task 3. Council roles are never a handler parameter or actor label: `council_decide` invokes the fixed Worker-owned roster. Each handler returns `toolText`/`toolError` with concise, structured fields. Add exact new names to `EXPECTED_TOOL_NAMES` and update the expected count.
 
 - [ ] **Step 4: Run focused tool and full surface tests**
 

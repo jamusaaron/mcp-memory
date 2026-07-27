@@ -42,6 +42,25 @@ async function count(DB: D1Database, table: string): Promise<number> {
 	return row?.count ?? 0;
 }
 
+async function legacyMigrationChecksum(
+	migration: (typeof DATABASE_MIGRATIONS)[number],
+): Promise<string> {
+	const digest = await crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(
+			JSON.stringify({
+				version: migration.version,
+				name: migration.name,
+				statements: migration.statements,
+				requiredColumns: migration.requiredColumns ?? {},
+			}),
+		),
+	);
+	return [...new Uint8Array(digest)]
+		.map((byte) => byte.toString(16).padStart(2, "0"))
+		.join("");
+}
+
 async function initializeUntilReady(env: Env): Promise<void> {
 	for (let attempt = 0; attempt < DATABASE_MIGRATIONS.length + 3; attempt += 1) {
 		const result = await initializeDatabase(env);
@@ -215,6 +234,59 @@ test("coordination migration is additive and preserves legacy rows", async (t) =
 	assert.equal(await count(DB, "agent_tasks"), 1);
 });
 
+test("coordination migration tolerates a partial legacy schema without agent tasks", async (t) => {
+	const DB = createSqliteD1();
+	t.after(() => DB.close());
+	DB.raw.exec(`
+		CREATE TABLE memories (
+			id TEXT PRIMARY KEY,
+			userId TEXT NOT NULL,
+			text TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			pinned INTEGER NOT NULL DEFAULT 0,
+			access_count INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE person_profiles (
+			id TEXT PRIMARY KEY,
+			personId TEXT NOT NULL,
+			userId TEXT NOT NULL,
+			section TEXT NOT NULL,
+			content TEXT NOT NULL
+		);
+		CREATE TABLE behavioral_observations (
+			id TEXT PRIMARY KEY,
+			userId TEXT NOT NULL,
+			observation_type TEXT NOT NULL,
+			content TEXT NOT NULL
+		);
+		CREATE TABLE personality_feedback (
+			id TEXT PRIMARY KEY,
+			userId TEXT NOT NULL,
+			feedback_score REAL,
+			created_at TEXT NOT NULL
+		);
+	`);
+	await initializeUntilReady(envFor(DB));
+	assert.ok((await tableNames(DB)).includes("coordination_task_leases"));
+	assert.equal(
+		await DB.prepare(
+			`SELECT name FROM sqlite_master
+			 WHERE type='index' AND name='idx_agent_tasks_tenant_id'`,
+		).first(),
+		null,
+	);
+	await assert.rejects(
+		DB.prepare(
+			`INSERT INTO coordination_task_leases
+			 (id,userId,task_id,lease_id,holder_id,leased_at,heartbeat_at,
+			  expires_at,actor_id)
+			 VALUES ('lease-a','u1','missing-task','opaque-a','worker',
+			  '2026-01-01','2026-01-01','2026-01-02','worker')`,
+		).run(),
+		/agent_tasks|foreign key/i,
+	);
+});
+
 test("coordination foreign keys reject cross-tenant parent references", async (t) => {
 	const DB = createSqliteD1();
 	t.after(() => DB.close());
@@ -234,6 +306,22 @@ test("coordination foreign keys reject cross-tenant parent references", async (t
 		`INSERT INTO council_proposals
 		 (id,userId,question,council_roles_json,actor_id)
 		 VALUES ('proposal-b','tenant-b','Question?','[]','server')`,
+	).run();
+	const tenantTaskIndex = await DB.prepare(
+		"PRAGMA index_info(idx_agent_tasks_tenant_id)",
+	).all<{ seqno: number; name: string }>();
+	assert.deepEqual(
+		tenantTaskIndex.results
+			.sort((a, b) => a.seqno - b.seqno)
+			.map(({ name }) => name),
+		["userId", "id"],
+	);
+	await DB.prepare(
+		`INSERT INTO coordination_task_leases
+		 (id,userId,task_id,lease_id,holder_id,leased_at,heartbeat_at,
+		  expires_at,actor_id)
+		 VALUES ('lease-b','tenant-b','task-b','opaque-b','worker',
+		  '2026-01-01','2026-01-01','2026-01-02','worker')`,
 	).run();
 
 	await assert.rejects(
@@ -416,6 +504,33 @@ test("migration runner rejects changed name or checksum", async (t) => {
 		readDatabaseMigrationStatus(env),
 		/checksum mismatch/i,
 	);
+});
+
+test("conditional migration metadata preserves recorded v1-v4 checksums", async (t) => {
+	const DB = createSqliteD1();
+	t.after(() => DB.close());
+	DB.raw.exec(`CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY,
+		name TEXT NOT NULL,
+		checksum TEXT NOT NULL,
+		applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`);
+	for (const migration of DATABASE_MIGRATIONS.filter(
+		({ version }) => version < 5,
+	)) {
+		await DB.prepare(
+			"INSERT INTO schema_migrations(version,name,checksum) VALUES(?,?,?)",
+		)
+			.bind(
+				migration.version,
+				migration.name,
+				await legacyMigrationChecksum(migration),
+			)
+			.run();
+	}
+	const status = await readDatabaseMigrationStatus(envFor(DB));
+	assert.deepEqual(status.appliedVersions, [1, 2, 3, 4]);
+	assert.equal(status.nextVersion, 5);
 });
 
 test("unexpected DDL errors propagate and batch changes roll back", async (t) => {

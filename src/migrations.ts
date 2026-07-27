@@ -16,6 +16,12 @@ export type MigrationDefinition = {
 	version: number;
 	name: string;
 	statements: readonly string[];
+	conditionalIndexes?: Readonly<
+		{
+			table: string;
+			statement: string;
+		}[]
+	>;
 	requiredColumns?: Readonly<
 		Record<
 			string,
@@ -268,8 +274,6 @@ export const DATABASE_MIGRATIONS: readonly MigrationDefinition[] = [
 			)`,
 			`CREATE INDEX IF NOT EXISTS idx_coordination_handoff_reviews
 			 ON coordination_handoff_reviews(userId,handoff_id,created_at DESC,id DESC)`,
-			`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_tenant_id
-			 ON agent_tasks(userId,id)`,
 			`CREATE TABLE IF NOT EXISTS coordination_task_leases (
 				id TEXT PRIMARY KEY,
 				userId TEXT NOT NULL,
@@ -360,6 +364,13 @@ export const DATABASE_MIGRATIONS: readonly MigrationDefinition[] = [
 			 ON council_events(userId,proposal_id)
 			 WHERE event_type='decision_finalized'`,
 		],
+		conditionalIndexes: [
+			{
+				table: "agent_tasks",
+				statement: `CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_tenant_id
+				 ON agent_tasks(userId,id)`,
+			},
+		],
 	},
 ];
 
@@ -382,6 +393,9 @@ async function migrationChecksum(
 			name: migration.name,
 			statements: migration.statements,
 			requiredColumns: migration.requiredColumns ?? {},
+			...(migration.conditionalIndexes === undefined
+				? {}
+				: { conditionalIndexes: migration.conditionalIndexes }),
 		}),
 	);
 }
@@ -489,6 +503,29 @@ export async function appendRequiredColumnStatementsWithBudget(
 	}
 }
 
+async function tableExistsWithBudget(
+	db: MigrationQueryBudget,
+	table: string,
+): Promise<boolean> {
+	return (await db.first<{ name: string }>(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+		[table],
+	)) !== null;
+}
+
+export async function appendConditionalIndexStatementsWithBudget(
+	db: MigrationQueryBudget,
+	env: Env,
+	conditionalIndexes: NonNullable<MigrationDefinition["conditionalIndexes"]>,
+	statements: D1PreparedStatement[],
+): Promise<void> {
+	for (const { table, statement } of conditionalIndexes) {
+		if (await tableExistsWithBudget(db, table)) {
+			statements.push(env.DB.prepare(statement));
+		}
+	}
+}
+
 export async function readStatusWithBudget(
 	db: MigrationQueryBudget,
 ): Promise<Omit<DatabaseMigrationStatus, "queryCount">> {
@@ -564,6 +601,12 @@ export async function advanceDatabaseInitializationWithBudget(
 		db,
 		env,
 		migration.requiredColumns ?? {},
+		statements,
+	);
+	await appendConditionalIndexStatementsWithBudget(
+		db,
+		env,
+		migration.conditionalIndexes ?? [],
 		statements,
 	);
 	const checksum = await migrationChecksum(migration);

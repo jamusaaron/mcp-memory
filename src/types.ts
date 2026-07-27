@@ -328,6 +328,41 @@ export interface CouncilVote {
 	updated_at: string;
 }
 
+export interface CouncilProposalCreateMetadata {
+	schema_version: 1;
+	supersedes_proposal_id: string | null;
+	content_sha256: string;
+	council_roles: CouncilRole[];
+}
+
+export interface CouncilDecisionMetadata {
+	schema_version: 1;
+	run_id: string;
+	synthesis: string;
+	decision_rule: "five-approvals-no-escalation";
+	dissenting_roles: CouncilRole[];
+	role_order: CouncilRole[];
+}
+
+export interface CouncilEvent {
+	id: string;
+	userId: string;
+	proposal_id: string;
+	event_type:
+		| "proposal_created"
+		| "voting_started"
+		| "decision_finalized"
+		| "proposal_expired";
+	outcome: CouncilOutcome | null;
+	approve_count: number | null;
+	reject_count: number | null;
+	escalate_count: number | null;
+	metadata: Record<string, unknown>;
+	actor_id: string;
+	created_at: string;
+	updated_at: string;
+}
+
 export interface CouncilDecision {
 	proposal: CouncilProposal;
 	votes: CouncilVote[];
@@ -336,6 +371,9 @@ export interface CouncilDecision {
 	reject_count: number;
 	escalate_count: number;
 	decided_at: string | null;
+	synthesis: string | null;
+	final_event_id: string | null;
+	supersedes_proposal_id: string | null;
 }
 
 // ---- Trusted second-brain artifact types ----

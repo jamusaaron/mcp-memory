@@ -833,7 +833,7 @@ export async function releaseCoordinationTask(
 }
 
 function isReservedCouncilActor(actor: string): boolean {
-	return actor.startsWith("council:");
+	return actor.toLowerCase().startsWith("council:");
 }
 
 function validatedCouncilOptions(options: readonly string[] | undefined): string[] {

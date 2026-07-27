@@ -1766,6 +1766,17 @@ test("invalid or failed council runs leave no partial votes, events, or status t
 				"council:forged",
 				harness.env,
 				clock,
+		),
+		/reserved|council/i,
+	);
+	await assert.rejects(
+		() =>
+			createCouncilProposal(
+				councilProposalInput({ question: "Can mixed-case council identity author this?" }),
+				"u1",
+				"Council:evidence",
+				harness.env,
+				clock,
 			),
 		/reserved|council/i,
 	);

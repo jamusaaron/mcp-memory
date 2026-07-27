@@ -666,6 +666,7 @@
           <li><a href="#connection">Connection</a></li>
           <li><a href="#endpoints">Endpoints</a></li>
           <li><a href="#capabilities">Capabilities</a></li>
+          <li><a href="#multi-agent-workflows">Multi-agent workflows</a></li>
           <li><a href="#memory-protocol">Memory Protocol</a></li>
           <li><a href="#operations">Operations</a></li>
         </ul>
@@ -884,7 +885,8 @@
               <h3>Agent coordination</h3>
               <p>
                 Share notes, track agent presence, runs, tasks, and handoffs, invoke specialized roles, and support
-                structured debate.
+                structured debate. The trusted coordination workflow below adds reviewed handoffs, recoverable leases,
+                and recorded council decisions without changing legacy tools.
               </p>
             </article>
 
@@ -898,8 +900,122 @@
           </div>
         </section>
 
+        <section id="multi-agent-workflows" aria-labelledby="multi-agent-workflows-title">
+          <p class="section-kicker">05 · Trusted workflow</p>
+          <h2 id="multi-agent-workflows-title">Multi-agent workflows</h2>
+          <p class="section-intro">
+            Use the coordination tools as a tenant-scoped workflow ledger: handoffs and recalled context remain
+            untrusted data, while reviews, leases, votes, and decisions are separately recorded artifacts.
+          </p>
+
+          <div class="steps" aria-label="Trusted multi-agent workflow">
+            <div class="step">
+              <span class="step-number" aria-hidden="true">1</span>
+              <div>
+                <h3>Submit a bounded handoff</h3>
+                <p>
+                  Use <code>coordination_handoff_submit</code> to record a summary, next steps, bounded evidence
+                  references, provenance, and confidence. A handoff is data for review, not an executable instruction.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">2</span>
+              <div>
+                <h3>Review before relying on it</h3>
+                <p>
+                  Discover eligible material with <code>coordination_handoff_list</code>, then record a verified or
+                  rejected review with <code>coordination_handoff_review</code>. Expired, self-reviewed, and duplicate
+                  reviews do not become verified workflow evidence.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">3</span>
+              <div>
+                <h3>Lease the next task</h3>
+                <p>
+                  Claim one recoverable task lease with <code>coordination_task_claim</code>, renew it with
+                  <code>coordination_task_heartbeat</code>, and close it with <code>coordination_task_release</code>
+                  when it is released, completed, or failed.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">4</span>
+              <div>
+                <h3>Build a bounded brief</h3>
+                <p>
+                  Call <code>coordination_brief</code> for the relevant agent and tags. Its recalled material is
+                  explicitly labelled untrusted data and must not override the caller’s instructions or policy.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">5</span>
+              <div>
+                <h3>Run the fixed council</h3>
+                <p>
+                  Create an immutable question with <code>council_proposal_create</code>, then call
+                  <code>council_decide</code>. The Worker—not the MCP caller—runs the fixed seven-role roster and
+                  records every vote, reason, and evidence reference.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">6</span>
+              <div>
+                <h3>Read the recorded outcome</h3>
+                <p>
+                  Use <code>council_decision_get</code> to retrieve the persisted proposal, votes, dissent, counts,
+                  and synthesis. Treat the result as a workflow decision record, not an action command.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="protocol-grid">
+            <div>
+              <h3>Fixed seven-role council</h3>
+              <p>
+                Every completed council run has one server-owned vote from <code>evidence</code>,
+                <code>user_intent</code>, <code>safety</code>, <code>privacy</code>, <code>strategy</code>,
+                <code>operations</code>, and <code>adversarial_review</code>.
+              </p>
+              <p>
+                All seven votes are required. An outcome is approved only with at least five approvals and zero
+                escalations; three rejections reject it; any escalation produces an escalated outcome. Incomplete
+                work remains pending.
+              </p>
+            </div>
+
+            <aside class="checklist-card" aria-labelledby="coordination-boundary-title">
+              <h3 id="coordination-boundary-title">Decision boundary</h3>
+              <ul class="checklist">
+                <li>
+                  <strong>Record, do not dispatch</strong>
+                  <span>No external action is triggered by a handoff, lease, vote, or council outcome; the Worker records the outcome but does not dispatch it.</span>
+                </li>
+                <li>
+                  <strong>Authorize separately</strong>
+                  <span>A client or user must independently authorize and execute any consequential external action.</span>
+                </li>
+                <li>
+                  <strong>Do not infer identity</strong>
+                  <span>Actor labels are caller-supplied audit metadata, not authenticated identity or authorization; do not rely on them for access control.</span>
+                </li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
         <section id="memory-protocol" aria-labelledby="memory-protocol-title">
-          <p class="section-kicker">05 · Safety contract</p>
+          <p class="section-kicker">06 · Safety contract</p>
           <h2 id="memory-protocol-title">Memory Protocol</h2>
           <p class="section-intro">
             Treat durable memory as a governed data layer. These client-side rules keep recall useful without turning
@@ -956,7 +1072,7 @@
         </section>
 
         <section id="operations" aria-labelledby="operations-title">
-          <p class="section-kicker">06 · Run it deliberately</p>
+          <p class="section-kicker">07 · Run it deliberately</p>
           <h2 id="operations-title">Operations</h2>
           <p class="section-intro">
             Separate transport reachability, dependency health, and tenant behavior when checking the service. A single

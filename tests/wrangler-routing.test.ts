@@ -78,8 +78,8 @@ test("denies unauthenticated REST and MCP requests before their handlers", async
 	assert.equal(mcpDispatches, 0, "the access gate must run before MCP dispatch");
 });
 
-test("serves the Worker-owned login page without invoking MCP dispatch", async () => {
-	let assetPath = "";
+test("serves the Worker-owned login page without invoking assets or MCP dispatch", async () => {
+	let assetFetches = 0;
 	let mcpDispatches = 0;
 	const app = createApp(async () => {
 		mcpDispatches += 1;
@@ -89,9 +89,9 @@ test("serves the Worker-owned login page without invoking MCP dispatch", async (
 		APP_ACCESS_KEY: "private-access-key",
 		COOKIE_ENCRYPTION_KEY: "cookie-signing-key",
 		ASSETS: {
-			fetch: async (request: Request) => {
-				assetPath = new URL(request.url).pathname;
-				return new Response("login page");
+			fetch: async () => {
+				assetFetches += 1;
+				return new Response("unexpected asset response");
 			},
 		},
 	} as Env;
@@ -103,8 +103,9 @@ test("serves the Worker-owned login page without invoking MCP dispatch", async (
 	);
 
 	assert.equal(response.status, 200);
-	assert.equal(await response.text(), "login page");
-	assert.equal(assetPath, "/login");
+	assert.match(await response.text(), /MCP Memory · Private sign in/);
+	assert.equal(response.headers.get("cache-control"), "no-store");
+	assert.equal(assetFetches, 0);
 	assert.equal(mcpDispatches, 0);
 });
 

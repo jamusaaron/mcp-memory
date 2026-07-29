@@ -8,6 +8,7 @@ import {
 	SESSION_MAX_AGE_SECONDS,
 	verifyAccessKey,
 } from "./app-access";
+import { loginPage } from "./login-page";
 import { initializeDatabase } from "./schema";
 import {
 	deleteMemory,
@@ -30,13 +31,6 @@ function assetRequest(request: Request, pathname: string): Request {
 	const url = new URL(request.url);
 	url.pathname = pathname;
 	return new Request(url, request);
-}
-
-async function noStoreAsset(request: Request, pathname: string, assets: Fetcher): Promise<Response> {
-	const asset = await assets.fetch(assetRequest(request, pathname));
-	const headers = new Headers(asset.headers);
-	headers.set("Cache-Control", "no-store");
-	return new Response(asset.body, { status: asset.status, headers });
 }
 
 function safeNext(value: unknown): string {
@@ -103,7 +97,7 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 		await next();
 	});
 
-	app.get("/auth/login", (c) => noStoreAsset(c.req.raw, "/login", c.env.ASSETS));
+	app.get("/auth/login", (c) => c.html(loginPage, 200, { "Cache-Control": "no-store" }));
 
 	app.post("/auth/session", async (c) => {
 		let body: { accessKey?: unknown; next?: unknown };

@@ -77,5 +77,15 @@ test("publishes an authenticated console start menu without tenant data", async 
   assert.match(menu, /href="\/docs"/);
   assert.match(menu, /Service health/);
   assert.match(menu, /href="\/docs#operations"/);
-  assert.doesNotMatch(menu, /\{userId\}|localStorage|sessionStorage|fetch\(/i);
+	assert.doesNotMatch(menu, /\{userId\}|localStorage|sessionStorage|fetch\(/i);
+});
+
+test("publishes an accessible tenant picker with a manual-entry fallback", async () => {
+	const consolePage = await readFile(new URL("../static/console.html", import.meta.url), "utf8");
+
+	assert.match(consolePage, /<label for="tenant-select">Available tenants<\/label>/);
+	assert.match(consolePage, /<select id="tenant-select" name="tenantSelect" disabled>/);
+	assert.match(consolePage, /<details class="field">/);
+	assert.match(consolePage, /<summary>Enter tenant ID manually<\/summary>/);
+	assert.match(consolePage, /<input id="tenant-id" name="tenantId" autocomplete="off" \/>/);
 });

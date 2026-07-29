@@ -22,6 +22,14 @@ export function requiresDeleteConfirmation(memoryId, confirmation) {
 	return Boolean(memoryId) && confirmation === memoryId;
 }
 
+export function tenantOptionLabel(tenant) {
+	return `${tenant.id} — ${tenant.memoryCount} ${tenant.memoryCount === 1 ? "memory" : "memories"}`;
+}
+
+export function selectedTenantId(selectedId, manualId) {
+	return manualId.trim() || selectedId.trim();
+}
+
 if (typeof document !== "undefined") {
 	const state = {
 		tenantId: "",
@@ -34,6 +42,7 @@ if (typeof document !== "undefined") {
 
 	const elements = {
 		tenantForm: document.querySelector("#tenant-form"),
+		tenantSelect: document.querySelector("#tenant-select"),
 		tenantId: document.querySelector("#tenant-id"),
 		status: document.querySelector("#console-status"),
 		editorPanel: document.querySelector("#editor-panel"),
@@ -122,6 +131,38 @@ if (typeof document !== "undefined") {
 		}
 		if (!response.ok || payload?.success === false || !payload) throw new Error("Request failed");
 		return payload;
+	}
+
+	async function loadTenantOptions() {
+		try {
+			const payload = await request("/tenants");
+			const tenants = Array.isArray(payload.tenants) ? payload.tenants : [];
+			elements.tenantSelect.replaceChildren();
+			const placeholder = document.createElement("option");
+			placeholder.value = "";
+			placeholder.textContent = tenants.length
+				? "Select a tenant…"
+				: "No tenants with memories are available";
+			elements.tenantSelect.append(placeholder);
+			for (const tenant of tenants) {
+				const option = document.createElement("option");
+				option.value = tenant.id;
+				option.textContent = tenantOptionLabel(tenant);
+				elements.tenantSelect.append(option);
+			}
+			elements.tenantSelect.disabled = tenants.length === 0;
+			if (tenants.length === 0) {
+				setStatus("No tenants with memories were found. Enter a tenant ID manually.", "error");
+			}
+		} catch {
+			elements.tenantSelect.replaceChildren();
+			const unavailable = document.createElement("option");
+			unavailable.value = "";
+			unavailable.textContent = "Tenant choices unavailable";
+			elements.tenantSelect.append(unavailable);
+			elements.tenantSelect.disabled = true;
+			setStatus("Unable to load tenant choices. Enter a tenant ID manually.", "error");
+		}
 	}
 
 	function populateFilters() {
@@ -267,7 +308,12 @@ if (typeof document !== "undefined") {
 
 	elements.tenantForm.addEventListener("submit", (event) => {
 		event.preventDefault();
-		void loadWorkspace(elements.tenantId.value);
+		const tenantId = selectedTenantId(elements.tenantSelect.value, elements.tenantId.value);
+		if (!tenantId) {
+			setStatus("Select a tenant or enter a tenant ID manually.", "error");
+			return;
+		}
+		void loadWorkspace(tenantId);
 	});
 
 	elements.newMemory.addEventListener("click", () => openEditor());
@@ -330,4 +376,5 @@ if (typeof document !== "undefined") {
 
 	elements.cancelDelete.addEventListener("click", closeDeleteDialog);
 	elements.deleteDialog.addEventListener("cancel", closeDeleteDialog);
+	void loadTenantOptions();
 }

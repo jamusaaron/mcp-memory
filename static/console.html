@@ -72,6 +72,8 @@
       textarea { min-height: 8rem; resize: vertical; }
       input:disabled, select:disabled { opacity: .58; cursor: not-allowed; }
       .field + .field { margin-top: 1rem; }
+      details.field summary { cursor: pointer; color: var(--indigo); font-weight: 750; }
+      details.field label { margin-top: .85rem; }
       .button-row { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; }
       .button, .secondary-button, .danger-button, .text-button {
         border: 1px solid var(--border); border-radius: .55rem; padding: .65rem .85rem; font-weight: 800;
@@ -129,9 +131,16 @@
               <p class="section-intro">Tenant selection is kept only while this page remains open.</p>
               <form id="tenant-form">
                 <div class="field">
-                  <label for="tenant-id">Tenant ID</label>
-                  <input id="tenant-id" name="tenantId" autocomplete="off" required />
+                  <label for="tenant-select">Available tenants</label>
+                  <select id="tenant-select" name="tenantSelect" disabled>
+                    <option value="">Loading available tenants…</option>
+                  </select>
                 </div>
+                <details class="field">
+                  <summary>Enter tenant ID manually</summary>
+                  <label for="tenant-id">Tenant ID</label>
+                  <input id="tenant-id" name="tenantId" autocomplete="off" />
+                </details>
                 <div class="button-row"><button class="button" type="submit">Load workspace</button></div>
               </form>
               <p id="console-status" class="status" aria-live="polite"></p>

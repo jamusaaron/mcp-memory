@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as consoleWorkspace from "../static/console.mjs";
 import {
 	filterMemories,
 	memoryRoute,
@@ -56,4 +57,28 @@ test("requires the selected memory ID before allowing delete", () => {
 	assert.equal(requiresDeleteConfirmation("memory-42", "memory-42"), true);
 	assert.equal(requiresDeleteConfirmation("memory-42", "MEMORY-42"), false);
 	assert.equal(requiresDeleteConfirmation("memory-42", ""), false);
+});
+
+test("labels selectable tenant options with their memory counts", () => {
+	const tenantOptionLabel = consoleWorkspace.tenantOptionLabel;
+	assert.equal(typeof tenantOptionLabel, "function", "the console must format tenant choices");
+	if (typeof tenantOptionLabel !== "function") return;
+
+	assert.equal(
+		tenantOptionLabel({ id: "tenant-a", memoryCount: 1 }),
+		"tenant-a — 1 memory",
+	);
+	assert.equal(
+		tenantOptionLabel({ id: "tenant-b", memoryCount: 2 }),
+		"tenant-b — 2 memories",
+	);
+});
+
+test("uses manual tenant entry in preference to a selected discovery result", () => {
+	const selectedTenantId = consoleWorkspace.selectedTenantId;
+	assert.equal(typeof selectedTenantId, "function", "the console must keep manual tenant entry");
+	if (typeof selectedTenantId !== "function") return;
+
+	assert.equal(selectedTenantId("tenant-a", ""), "tenant-a");
+	assert.equal(selectedTenantId("tenant-a", "  tenant-manual  "), "tenant-manual");
 });

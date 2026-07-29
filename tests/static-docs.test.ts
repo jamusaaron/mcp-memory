@@ -34,3 +34,24 @@ test("documents the trusted multi-agent workflow and decision boundary", async (
     /actor labels are caller-supplied audit metadata, not authenticated identity or authorization/i,
   );
 });
+
+test("uses the selected dark reference system and visible copy feedback", async () => {
+  const [page, claude] = await Promise.all([
+    readFile(new URL("../static/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../CLAUDE.md", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /color-scheme:\s*dark/);
+  assert.match(page, /--paper:\s*#070b17/);
+  assert.match(page, /--surface:\s*#0e1628/);
+  assert.match(page, /\.copy-button\[data-copy-state\]/);
+  assert.match(page, /data-copy-label/);
+  assert.match(page, /Copied/);
+  assert.match(page, /Selected — copy manually/);
+  assert.match(page, /Unavailable/);
+  assert.match(page, /window\.setTimeout/);
+  assert.doesNotMatch(page, /fetch\(/i);
+
+  assert.match(claude, /static\/index\.html` — Static developer reference/);
+  assert.doesNotMatch(claude, /Web UI for managing memories/);
+});

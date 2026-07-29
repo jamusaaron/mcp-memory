@@ -43,7 +43,7 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/utils/cloudflare-api.ts` — validated optional Cloudflare account API access
 - `src/utils/tool-result.ts` — consistent MCP text and error results
 - `src/utils/ai.ts` — Workers AI helpers (triage, extraction, summarization)
-- `static/index.html` — Web UI for managing memories
+- `static/index.html` — Static developer reference for connecting to the tenant-scoped MCP Memory service
 - `wrangler.jsonc` — Cloudflare Workers configuration
 
 ## Commands

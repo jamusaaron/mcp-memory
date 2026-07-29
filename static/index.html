@@ -10,20 +10,21 @@
     <title>MCP Memory · Developer reference</title>
     <style>
       :root {
-        color-scheme: light;
-        --ink: #101828;
-        --paper: #f7f9fc;
-        --cyan: #10b8c4;
-        --indigo: #4338ca;
-        --muted: #5d687a;
-        --border: #d8deea;
-        --code: #111827;
+        color-scheme: dark;
+        --ink: #f4f7fb;
+        --paper: #070b17;
+        --surface: #0e1628;
+        --surface-raised: #14213a;
+        --cyan: #57e2eb;
+        --indigo: #a5a0ff;
+        --muted: #a9b7cf;
+        --border: #2c3b54;
+        --code: #050a14;
         --code-ink: #eaf2ff;
-        --surface: #ffffff;
-        --soft-cyan: #e8fbfc;
-        --soft-indigo: #eef0ff;
-        --focus: #f97316;
-        --shadow: 0 18px 45px rgb(32 47 82 / 8%);
+        --soft-cyan: #092b36;
+        --soft-indigo: #1a1c46;
+        --focus: #fbbf24;
+        --shadow: 0 20px 52px rgb(0 0 0 / 35%);
       }
 
       *,
@@ -40,7 +41,7 @@
       body {
         margin: 0;
         background:
-          linear-gradient(135deg, rgb(16 184 196 / 8%), transparent 24rem),
+          linear-gradient(135deg, rgb(87 226 235 / 9%), transparent 24rem),
           var(--paper);
         color: var(--ink);
         font-family:
@@ -55,7 +56,7 @@
       }
 
       a:hover {
-        color: #312e81;
+        color: #d1ceff;
       }
 
       button,
@@ -87,8 +88,8 @@
       }
 
       .site-header {
-        border-bottom: 1px solid rgb(216 222 234 / 85%);
-        background: rgb(247 249 252 / 88%);
+        border-bottom: 1px solid var(--border);
+        background: rgb(7 11 23 / 88%);
       }
 
       .header-inner,
@@ -119,7 +120,7 @@
         height: 0.7rem;
         border-radius: 999px;
         background: var(--cyan);
-        box-shadow: 0 0 0 0.28rem rgb(16 184 196 / 15%);
+        box-shadow: 0 0 0 0.28rem rgb(87 226 235 / 15%);
         content: "";
       }
 
@@ -160,7 +161,7 @@
         border-radius: 999px;
         background: var(--surface);
         padding: 0.55rem 0.85rem;
-        box-shadow: 0 8px 24px rgb(32 47 82 / 7%);
+        box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
         overflow-x: auto;
       }
 
@@ -252,7 +253,7 @@
 
       .callout {
         margin-block: 1.25rem;
-        border: 1px solid #b6e9ed;
+        border: 1px solid #176b7a;
         border-left: 0.3rem solid var(--cyan);
         border-radius: 0.7rem;
         background: var(--soft-cyan);
@@ -260,7 +261,7 @@
       }
 
       .callout strong {
-        color: #075d66;
+        color: #a1f4f8;
       }
 
       .callout p {
@@ -303,7 +304,7 @@
       .code-frame {
         min-width: 0;
         margin-top: 0.9rem;
-        border: 1px solid #27344b;
+        border: 1px solid var(--border);
         border-radius: 0.85rem;
         background: var(--code);
         overflow: hidden;
@@ -314,12 +315,12 @@
         align-items: center;
         justify-content: space-between;
         gap: 1rem;
-        border-bottom: 1px solid #27344b;
+        border-bottom: 1px solid var(--border);
         padding: 0.55rem 0.65rem 0.55rem 0.9rem;
       }
 
       .code-label {
-        color: #9eb0c9;
+        color: var(--muted);
         font-size: 0.73rem;
         font-weight: 750;
         letter-spacing: 0.08em;
@@ -328,10 +329,10 @@
 
       .copy-button {
         flex: none;
-        border: 1px solid #4b5c77;
+        border: 1px solid var(--border);
         border-radius: 0.5rem;
-        background: #1f2a3c;
-        color: #f8fbff;
+        background: var(--surface-raised);
+        color: var(--ink);
         padding: 0.44rem 0.7rem;
         font: inherit;
         font-size: 0.78rem;
@@ -344,7 +345,22 @@
 
       .copy-button:hover {
         border-color: var(--cyan);
-        background: #263850;
+        background: #1c2e4d;
+      }
+
+      .copy-button[data-copy-state] {
+        border-color: var(--cyan);
+        background: var(--soft-cyan);
+        color: var(--ink);
+      }
+
+      .copy-button[data-copy-state="fallback"] {
+        border-color: var(--focus);
+      }
+
+      .copy-button[data-copy-state="unavailable"] {
+        border-color: #fb7185;
+        background: #3a1523;
       }
 
       pre {
@@ -365,9 +381,9 @@
       :not(pre) > code {
         border: 1px solid var(--border);
         border-radius: 0.3rem;
-        background: #f2f5fa;
+        background: var(--surface-raised);
         padding: 0.08rem 0.28rem;
-        color: #263a70;
+        color: #c4c1ff;
         font-size: 0.9em;
       }
 
@@ -380,7 +396,7 @@
       .endpoint {
         border: 1px solid var(--border);
         border-radius: 0.8rem;
-        background: #fbfcfe;
+        background: var(--surface-raised);
         padding: 1rem;
       }
 
@@ -408,7 +424,7 @@
 
       .badge-rest {
         background: var(--soft-cyan);
-        color: #08626b;
+        color: #a1f4f8;
       }
 
       .badge-mcp {
@@ -696,6 +712,7 @@
                     <button
                       class="copy-button"
                       type="button"
+                      data-copy-label="Copy config"
                       data-copy-target="#claude-code-config"
                       aria-label="Copy Claude Code MCP configuration"
                     >
@@ -751,6 +768,7 @@
               <button
                 class="copy-button"
                 type="button"
+                data-copy-label="Copy URL"
                 data-copy-target="#direct-sse-url"
                 aria-label="Copy direct MCP SSE URL"
               >
@@ -1126,18 +1144,28 @@
           selection.addRange(range);
         };
 
-        const report = (message) => {
+        const setCopyFeedback = (button, label, state, message) => {
+          window.clearTimeout(Number(button.dataset.copyReset));
+          button.textContent = label;
+          button.dataset.copyState = state;
           status.textContent = "";
           window.requestAnimationFrame(() => {
             status.textContent = message;
           });
+          button.dataset.copyReset = String(
+            window.setTimeout(() => {
+              button.textContent = button.dataset.copyLabel;
+              button.removeAttribute("data-copy-state");
+              button.removeAttribute("data-copy-reset");
+            }, 2400),
+          );
         };
 
         buttons.forEach((button) => {
           button.addEventListener("click", async () => {
             const target = document.querySelector(button.dataset.copyTarget);
             if (!target) {
-              report("Copy target is unavailable.");
+              setCopyFeedback(button, "Unavailable", "unavailable", "Copy target is unavailable.");
               return;
             }
 
@@ -1146,17 +1174,17 @@
             if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
               try {
                 await navigator.clipboard.writeText(text);
-                report("Copied to clipboard.");
+                setCopyFeedback(button, "Copied", "success", "Copied to clipboard.");
                 return;
               } catch {
                 selectTarget(target);
-                report("Text selected and ready to copy.");
+                setCopyFeedback(button, "Selected — copy manually", "fallback", "Text selected and ready to copy.");
                 return;
               }
             }
 
             selectTarget(target);
-            report("Text selected and ready to copy.");
+            setCopyFeedback(button, "Selected — copy manually", "fallback", "Text selected and ready to copy.");
           });
         });
       })();

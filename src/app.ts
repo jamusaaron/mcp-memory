@@ -103,7 +103,7 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 		await next();
 	});
 
-	app.get("/auth/login", (c) => noStoreAsset(c.req.raw, "/login.html", c.env.ASSETS));
+	app.get("/auth/login", (c) => noStoreAsset(c.req.raw, "/login", c.env.ASSETS));
 
 	app.post("/auth/session", async (c) => {
 		let body: { accessKey?: unknown; next?: unknown };

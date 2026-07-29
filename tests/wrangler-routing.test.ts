@@ -104,7 +104,7 @@ test("serves the Worker-owned login page without invoking MCP dispatch", async (
 
 	assert.equal(response.status, 200);
 	assert.equal(await response.text(), "login page");
-	assert.equal(assetPath, "/login.html");
+	assert.equal(assetPath, "/login");
 	assert.equal(mcpDispatches, 0);
 });
 

@@ -55,3 +55,11 @@ test("uses the selected dark reference system and visible copy feedback", async 
   assert.match(claude, /static\/index\.html` — Static developer reference/);
   assert.doesNotMatch(claude, /Web UI for managing memories/);
 });
+
+test("keeps the mobile document column shrinkable around long code samples", async () => {
+  const page = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const mobilePageShell = page.match(/\.page-shell\s*\{(?<rules>[^}]*)\}/)?.groups?.rules;
+
+  assert.ok(mobilePageShell, "the base .page-shell rule must be present");
+  assert.match(mobilePageShell, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+});

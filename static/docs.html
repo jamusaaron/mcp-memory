@@ -1,0 +1,1201 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A source-grounded developer reference for connecting to the tenant-scoped MCP Memory service."
+    />
+    <title>MCP Memory · Developer reference</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f4f7fb;
+        --paper: #070b17;
+        --surface: #0e1628;
+        --surface-raised: #14213a;
+        --cyan: #57e2eb;
+        --indigo: #a5a0ff;
+        --muted: #a9b7cf;
+        --border: #2c3b54;
+        --code: #050a14;
+        --code-ink: #eaf2ff;
+        --soft-cyan: #092b36;
+        --soft-indigo: #1a1c46;
+        --focus: #fbbf24;
+        --shadow: 0 20px 52px rgb(0 0 0 / 35%);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+        scroll-padding-top: 1.5rem;
+      }
+
+      body {
+        margin: 0;
+        background:
+          linear-gradient(135deg, rgb(87 226 235 / 9%), transparent 24rem),
+          var(--paper);
+        color: var(--ink);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-size: 1rem;
+        line-height: 1.65;
+      }
+
+      a {
+        color: var(--indigo);
+        text-underline-offset: 0.2em;
+      }
+
+      a:hover {
+        color: #d1ceff;
+      }
+
+      button,
+      a {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      :focus-visible {
+        outline: 3px solid var(--focus);
+        outline-offset: 3px;
+        border-radius: 0.3rem;
+      }
+
+      .skip-link {
+        position: fixed;
+        z-index: 20;
+        top: 0.75rem;
+        left: 0.75rem;
+        transform: translateY(-180%);
+        border-radius: 0.5rem;
+        background: var(--ink);
+        color: white;
+        padding: 0.65rem 0.9rem;
+        transition: transform 160ms ease;
+      }
+
+      .skip-link:focus {
+        transform: translateY(0);
+      }
+
+      .site-header {
+        border-bottom: 1px solid var(--border);
+        background: rgb(7 11 23 / 88%);
+      }
+
+      .header-inner,
+      .page-shell,
+      .footer-inner {
+        width: min(100% - 2rem, 76rem);
+        margin-inline: auto;
+      }
+
+      .header-inner {
+        padding-block: 2.75rem 2.25rem;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.55rem;
+        margin: 0 0 0.75rem;
+        color: var(--indigo);
+        font-size: 0.78rem;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      .eyebrow::before {
+        width: 0.7rem;
+        height: 0.7rem;
+        border-radius: 999px;
+        background: var(--cyan);
+        box-shadow: 0 0 0 0.28rem rgb(87 226 235 / 15%);
+        content: "";
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin-block: 0;
+        color: var(--ink);
+        line-height: 1.15;
+        letter-spacing: -0.025em;
+      }
+
+      h1 {
+        max-width: 14ch;
+        font-size: clamp(2.35rem, 8vw, 4.75rem);
+      }
+
+      h2 {
+        font-size: clamp(1.75rem, 5vw, 2.5rem);
+      }
+
+      h3 {
+        font-size: 1.1rem;
+      }
+
+      .lede {
+        max-width: 43rem;
+        margin: 1.15rem 0 0;
+        color: var(--muted);
+        font-size: clamp(1.05rem, 2.4vw, 1.2rem);
+      }
+
+      .service-address {
+        display: inline-flex;
+        max-width: 100%;
+        margin-top: 1.4rem;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--surface);
+        padding: 0.55rem 0.85rem;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+        overflow-x: auto;
+      }
+
+      .service-address code {
+        color: var(--indigo);
+        font-size: 0.8rem;
+        white-space: nowrap;
+      }
+
+      .workspace-link {
+        margin: 1rem 0 0;
+        font-size: 0.9rem;
+        font-weight: 750;
+      }
+
+      .page-shell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2rem;
+        padding-block: 1.5rem 4rem;
+      }
+
+      .section-nav {
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        padding: 0.7rem;
+      }
+
+      .section-nav p {
+        margin: 0.45rem 0.65rem 0.35rem;
+        color: var(--muted);
+        font-size: 0.7rem;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .section-nav ul {
+        display: flex;
+        gap: 0.35rem;
+        margin: 0;
+        padding: 0;
+        overflow-x: auto;
+        list-style: none;
+      }
+
+      .section-nav a {
+        display: block;
+        border-radius: 0.55rem;
+        padding: 0.55rem 0.65rem;
+        color: var(--muted);
+        font-size: 0.86rem;
+        font-weight: 650;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+
+      .section-nav a:hover {
+        background: var(--soft-indigo);
+        color: var(--indigo);
+      }
+
+      main {
+        min-width: 0;
+      }
+
+      main > section {
+        scroll-margin-top: 1.5rem;
+        border: 1px solid var(--border);
+        border-radius: 1.2rem;
+        background: var(--surface);
+        box-shadow: var(--shadow);
+        padding: clamp(1.25rem, 4vw, 2.35rem);
+      }
+
+      main > section + section {
+        margin-top: 1.25rem;
+      }
+
+      .section-kicker {
+        margin: 0 0 0.5rem;
+        color: var(--cyan);
+        font-size: 0.72rem;
+        font-weight: 850;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .section-intro {
+        max-width: 48rem;
+        margin: 0.9rem 0 1.4rem;
+        color: var(--muted);
+      }
+
+      .callout {
+        margin-block: 1.25rem;
+        border: 1px solid #176b7a;
+        border-left: 0.3rem solid var(--cyan);
+        border-radius: 0.7rem;
+        background: var(--soft-cyan);
+        padding: 0.9rem 1rem;
+      }
+
+      .callout strong {
+        color: #a1f4f8;
+      }
+
+      .callout p {
+        margin: 0;
+      }
+
+      .steps {
+        display: grid;
+        gap: 1rem;
+        margin-top: 1.5rem;
+      }
+
+      .step {
+        display: grid;
+        grid-template-columns: 2rem minmax(0, 1fr);
+        gap: 0.75rem;
+      }
+
+      .step-number {
+        display: grid;
+        width: 2rem;
+        height: 2rem;
+        place-items: center;
+        border-radius: 999px;
+        background: var(--indigo);
+        color: white;
+        font-size: 0.83rem;
+        font-weight: 800;
+      }
+
+      .step h3 {
+        margin-top: 0.25rem;
+      }
+
+      .step p {
+        margin: 0.35rem 0 0;
+        color: var(--muted);
+      }
+
+      .code-frame {
+        min-width: 0;
+        margin-top: 0.9rem;
+        border: 1px solid var(--border);
+        border-radius: 0.85rem;
+        background: var(--code);
+        overflow: hidden;
+      }
+
+      .code-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        border-bottom: 1px solid var(--border);
+        padding: 0.55rem 0.65rem 0.55rem 0.9rem;
+      }
+
+      .code-label {
+        color: var(--muted);
+        font-size: 0.73rem;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .copy-button {
+        flex: none;
+        border: 1px solid var(--border);
+        border-radius: 0.5rem;
+        background: var(--surface-raised);
+        color: var(--ink);
+        padding: 0.44rem 0.7rem;
+        font: inherit;
+        font-size: 0.78rem;
+        font-weight: 750;
+        cursor: pointer;
+        transition:
+          background-color 150ms ease,
+          border-color 150ms ease;
+      }
+
+      .copy-button:hover {
+        border-color: var(--cyan);
+        background: #1c2e4d;
+      }
+
+      .copy-button[data-copy-state] {
+        border-color: var(--cyan);
+        background: var(--soft-cyan);
+        color: var(--ink);
+      }
+
+      .copy-button[data-copy-state="fallback"] {
+        border-color: var(--focus);
+      }
+
+      .copy-button[data-copy-state="unavailable"] {
+        border-color: #fb7185;
+        background: #3a1523;
+      }
+
+      pre {
+        margin: 0;
+        padding: 1rem;
+        overflow-x: auto;
+        color: var(--code-ink);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.83rem;
+        line-height: 1.65;
+        tab-size: 2;
+      }
+
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+
+      :not(pre) > code {
+        border: 1px solid var(--border);
+        border-radius: 0.3rem;
+        background: var(--surface-raised);
+        padding: 0.08rem 0.28rem;
+        color: #c4c1ff;
+        font-size: 0.9em;
+      }
+
+      .endpoint-list {
+        display: grid;
+        gap: 0.8rem;
+        margin-top: 1.3rem;
+      }
+
+      .endpoint {
+        border: 1px solid var(--border);
+        border-radius: 0.8rem;
+        background: var(--surface-raised);
+        padding: 1rem;
+      }
+
+      .endpoint-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.45rem;
+      }
+
+      .endpoint-head code {
+        overflow-wrap: anywhere;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        padding: 0.18rem 0.48rem;
+        font-size: 0.66rem;
+        font-weight: 850;
+        letter-spacing: 0.045em;
+        text-transform: uppercase;
+      }
+
+      .badge-rest {
+        background: var(--soft-cyan);
+        color: #a1f4f8;
+      }
+
+      .badge-mcp {
+        background: var(--soft-indigo);
+        color: var(--indigo);
+      }
+
+      .badge-method {
+        border: 1px solid var(--border);
+        background: var(--surface);
+        color: var(--muted);
+      }
+
+      .endpoint p {
+        margin: 0.55rem 0 0;
+        color: var(--muted);
+        font-size: 0.93rem;
+      }
+
+      .capability-grid {
+        display: grid;
+        gap: 0.8rem;
+        margin-top: 1.25rem;
+      }
+
+      .capability {
+        position: relative;
+        border: 1px solid var(--border);
+        border-radius: 0.85rem;
+        padding: 1.05rem;
+        overflow: hidden;
+      }
+
+      .capability::before {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 0.22rem;
+        background: linear-gradient(var(--cyan), var(--indigo));
+        content: "";
+      }
+
+      .capability p {
+        margin: 0.45rem 0 0;
+        color: var(--muted);
+        font-size: 0.91rem;
+      }
+
+      .protocol-grid {
+        display: grid;
+        gap: 1rem;
+        margin-top: 1.4rem;
+      }
+
+      .protocol-list,
+      .checklist {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .protocol-list li,
+      .checklist li {
+        position: relative;
+        padding-left: 1.7rem;
+      }
+
+      .protocol-list li + li,
+      .checklist li + li {
+        margin-top: 0.9rem;
+      }
+
+      .protocol-list li::before {
+        position: absolute;
+        top: 0.55em;
+        left: 0.15rem;
+        width: 0.55rem;
+        height: 0.55rem;
+        border: 2px solid var(--cyan);
+        border-radius: 999px;
+        content: "";
+      }
+
+      .checklist-card {
+        border-radius: 0.9rem;
+        background: var(--soft-indigo);
+        padding: 1.15rem;
+      }
+
+      .checklist-card h3 {
+        margin-bottom: 0.9rem;
+        color: var(--indigo);
+      }
+
+      .checklist li::before {
+        position: absolute;
+        top: 0.13rem;
+        left: 0;
+        color: var(--indigo);
+        font-weight: 900;
+        content: "✓";
+      }
+
+      .checklist strong {
+        display: block;
+      }
+
+      .checklist span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .operations-list {
+        display: grid;
+        gap: 0.7rem;
+        margin: 1.2rem 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .operations-list li {
+        border: 1px solid var(--border);
+        border-radius: 0.7rem;
+        padding: 0.8rem 0.9rem;
+      }
+
+      .operations-list strong {
+        display: block;
+      }
+
+      .operations-list span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .site-footer {
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+      }
+
+      .footer-inner {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 0.75rem 1.5rem;
+        padding-block: 1.4rem;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+
+      .footer-inner p {
+        margin: 0;
+      }
+
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+      }
+
+      @media (min-width: 42rem) {
+        .header-inner,
+        .page-shell,
+        .footer-inner {
+          width: min(100% - 3rem, 76rem);
+        }
+
+        .capability-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .protocol-grid {
+          grid-template-columns: minmax(0, 1.45fr) minmax(15rem, 0.85fr);
+          align-items: start;
+        }
+
+        .operations-list {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (min-width: 60rem) {
+        .header-inner {
+          padding-block: 4.3rem 3.3rem;
+        }
+
+        .page-shell {
+          grid-template-columns: 13rem minmax(0, 1fr);
+          gap: 2.5rem;
+          padding-block: 2.5rem 5rem;
+        }
+
+        .section-nav {
+          position: sticky;
+          top: 1.25rem;
+          align-self: start;
+          padding: 0.75rem;
+        }
+
+        .section-nav ul {
+          display: grid;
+          overflow: visible;
+        }
+
+        .section-nav a {
+          white-space: normal;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#content">Skip to developer reference</a>
+
+    <header class="site-header">
+      <div class="header-inner">
+        <p class="eyebrow">MCP Memory</p>
+        <h1>Durable context, tenant by tenant.</h1>
+        <p class="lede">
+          Connect an MCP client, understand the REST support routes, and apply a safe protocol for writing and
+          recalling long-term memory.
+        </p>
+        <div class="service-address" aria-label="MCP SSE route template">
+          <code>https://jamie-mcp-memory.jamusaaron.workers.dev/{userId}/sse</code>
+        </div>
+        <p class="workspace-link"><a href="/console">Back to memory workspace</a></p>
+      </div>
+    </header>
+
+    <div class="page-shell">
+      <nav class="section-nav" aria-label="Developer reference">
+        <p>On this page</p>
+        <ul>
+          <li><a href="#quickstart">Quickstart</a></li>
+          <li><a href="#connection">Connection</a></li>
+          <li><a href="#endpoints">Endpoints</a></li>
+          <li><a href="#capabilities">Capabilities</a></li>
+          <li><a href="#multi-agent-workflows">Multi-agent workflows</a></li>
+          <li><a href="#memory-protocol">Memory Protocol</a></li>
+          <li><a href="#operations">Operations</a></li>
+        </ul>
+      </nav>
+
+      <main id="content">
+        <section id="quickstart" aria-labelledby="quickstart-title">
+          <p class="section-kicker">01 · Start here</p>
+          <h2 id="quickstart-title">Quickstart</h2>
+          <p class="section-intro">
+            Choose an opaque, non-secret tenant identifier and keep it stable across your clients. The
+            <code>{userId}</code> segment selects an isolated memory namespace; it is a placeholder, not a real tenant ID.
+          </p>
+
+          <div class="steps">
+            <div class="step">
+              <span class="step-number" aria-hidden="true">1</span>
+              <div>
+                <h3>Configure Claude Code</h3>
+                <p>
+                  Add this repository-grounded <code>mcp-remote</code> entry to
+                  <code>.claude/settings.json</code>, then replace only <code>{userId}</code>.
+                </p>
+                <div class="code-frame">
+                  <div class="code-toolbar">
+                    <span class="code-label">.claude/settings.json</span>
+                    <button
+                      class="copy-button"
+                      type="button"
+                      data-copy-label="Copy config"
+                      data-copy-target="#claude-code-config"
+                      aria-label="Copy Claude Code MCP configuration"
+                    >
+                      Copy config
+                    </button>
+                  </div>
+                  <pre><code id="claude-code-config" data-copy="claude-code-config">{
+  "mcpServers": {
+    "mcp-memory": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://jamie-mcp-memory.jamusaaron.workers.dev/{userId}/sse"
+      ]
+    }
+  }
+}</code></pre>
+                </div>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">2</span>
+              <div>
+                <h3>Connect and inspect</h3>
+                <p>
+                  Restart or reload the MCP client, confirm that its tool discovery succeeds, and run a narrow recall
+                  before making a durable write.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="callout">
+            <p>
+              <strong>Scope note:</strong> this page documents the checked-in implementation. It does not assert live
+              availability, access policy, or client authentication requirements.
+            </p>
+          </div>
+        </section>
+
+        <section id="connection" aria-labelledby="connection-title">
+          <p class="section-kicker">02 · Transport</p>
+          <h2 id="connection-title">Connection</h2>
+          <p class="section-intro">
+            The MCP server is mounted on the tenant-scoped SSE path below. Use this URL in an MCP client or transport
+            adapter; do not treat it as a REST resource with a documented JSON payload.
+          </p>
+
+          <div class="code-frame">
+            <div class="code-toolbar">
+              <span class="code-label">MCP SSE URL</span>
+              <button
+                class="copy-button"
+                type="button"
+                data-copy-label="Copy URL"
+                data-copy-target="#direct-sse-url"
+                aria-label="Copy direct MCP SSE URL"
+              >
+                Copy URL
+              </button>
+            </div>
+            <pre><code id="direct-sse-url" data-copy="direct-sse-url">https://jamie-mcp-memory.jamusaaron.workers.dev/{userId}/sse</code></pre>
+          </div>
+
+          <div class="callout">
+            <p>
+              <strong>Tenant boundary:</strong> the URL path supplies the tenant key used by MCP registration, D1
+              queries, and the Vectorize namespace. Use a separate <code>{userId}</code> for each isolated memory space.
+            </p>
+          </div>
+        </section>
+
+        <section id="endpoints" aria-labelledby="endpoints-title">
+          <p class="section-kicker">03 · Route map</p>
+          <h2 id="endpoints-title">Endpoints</h2>
+          <p class="section-intro">
+            REST routes support health checks and memory CRUD. The SSE route is the MCP transport. Every tenant route
+            attempts a rate-limit check and waits for schema initialization before its handler runs; rate limiting
+            fails open when the limiter is unavailable.
+          </p>
+
+          <div class="endpoint-list">
+            <article class="endpoint">
+              <div class="endpoint-head">
+                <span class="badge badge-rest">REST</span>
+                <span class="badge badge-method">GET</span>
+                <code>/health</code>
+              </div>
+              <p>
+                Checks D1, KV, and Vectorize. Returns HTTP 200 only when every check is healthy; otherwise returns 503.
+              </p>
+            </article>
+
+            <article class="endpoint">
+              <div class="endpoint-head">
+                <span class="badge badge-rest">REST</span>
+                <span class="badge badge-method">GET</span>
+                <code>/{userId}/health</code>
+              </div>
+              <p>Reads the selected tenant’s memory index and returns it with the tenant identifier.</p>
+            </article>
+
+            <article class="endpoint">
+              <div class="endpoint-head">
+                <span class="badge badge-rest">REST</span>
+                <span class="badge badge-method">GET</span>
+                <span class="badge badge-method">POST</span>
+                <code>/{userId}/memories</code>
+              </div>
+              <p>
+                GET lists non-suppressed memories with optional <code>category</code>, <code>layer</code>, and
+                <code>limit</code> query parameters. POST creates a memory from non-empty <code>content</code> or
+                <code>text</code> and attempts an embedding.
+              </p>
+            </article>
+
+            <article class="endpoint">
+              <div class="endpoint-head">
+                <span class="badge badge-rest">REST</span>
+                <span class="badge badge-method">GET</span>
+                <span class="badge badge-method">PUT</span>
+                <span class="badge badge-method">DELETE</span>
+                <code>/{userId}/memories/{memoryId}</code>
+              </div>
+              <p>
+                Reads, replaces the content of, or deletes one tenant-bound memory. PUT reports whether re-embedding
+                completed or remains pending.
+              </p>
+            </article>
+
+            <article class="endpoint">
+              <div class="endpoint-head">
+                <span class="badge badge-mcp">MCP</span>
+                <span class="badge badge-method">SSE transport</span>
+                <code>/{userId}/sse</code>
+              </div>
+              <p>
+                Connects an MCP client to the selected tenant’s tool surface. Transport request and response details are
+                owned by the MCP runtime, not the REST API above.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="capabilities" aria-labelledby="capabilities-title">
+          <p class="section-kicker">04 · Tool surface</p>
+          <h2 id="capabilities-title">Capabilities</h2>
+          <p class="section-intro">
+            These implementation-derived groups describe the current tool surface without promising a fixed or
+            exhaustive compatibility list.
+          </p>
+
+          <div class="capability-grid">
+            <article class="capability">
+              <h3>Memory lifecycle</h3>
+              <p>
+                Write, edit, forget, suppress, restore, search, recall, pin, import, export, verify, decay, consolidate,
+                and produce decision or daily digests.
+              </p>
+            </article>
+
+            <article class="capability">
+              <h3>Sessions and context</h3>
+              <p>
+                Manage session briefs and logs, current context documents, large blobs, backend status, and supported
+                storage migration.
+              </p>
+            </article>
+
+            <article class="capability">
+              <h3>People and behavioural context</h3>
+              <p>
+                Maintain person and profile records, clarification loops, observations, feedback, and behavioural or
+                personality models.
+              </p>
+            </article>
+
+            <article class="capability">
+              <h3>Artifacts and ingestion</h3>
+              <p>
+                List, read, review, and restore cited artifact versions; triage inbound material and extract durable
+                context from ingestion flows.
+              </p>
+            </article>
+
+            <article class="capability">
+              <h3>Agent coordination</h3>
+              <p>
+                Share notes, track agent presence, runs, tasks, and handoffs, invoke specialized roles, and support
+                structured debate. The trusted coordination workflow below adds reviewed handoffs, recoverable leases,
+                and recorded council decisions without changing legacy tools.
+              </p>
+            </article>
+
+            <article class="capability">
+              <h3>Operations</h3>
+              <p>
+                Inspect system health and, when explicitly configured, perform credential-dependent Cloudflare
+                administration that may mutate infrastructure.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="multi-agent-workflows" aria-labelledby="multi-agent-workflows-title">
+          <p class="section-kicker">05 · Trusted workflow</p>
+          <h2 id="multi-agent-workflows-title">Multi-agent workflows</h2>
+          <p class="section-intro">
+            Use the coordination tools as a tenant-scoped workflow ledger: handoffs and recalled context remain
+            untrusted data, while reviews, leases, votes, and decisions are separately recorded artifacts.
+          </p>
+
+          <div class="steps" aria-label="Trusted multi-agent workflow">
+            <div class="step">
+              <span class="step-number" aria-hidden="true">1</span>
+              <div>
+                <h3>Submit a bounded handoff</h3>
+                <p>
+                  Use <code>coordination_handoff_submit</code> to record a summary, next steps, bounded evidence
+                  references, provenance, and confidence. A handoff is data for review, not an executable instruction.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">2</span>
+              <div>
+                <h3>Review before relying on it</h3>
+                <p>
+                  Discover eligible material with <code>coordination_handoff_list</code>, then record a verified or
+                  rejected review with <code>coordination_handoff_review</code>. Expired, self-reviewed, and duplicate
+                  reviews do not become verified workflow evidence.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">3</span>
+              <div>
+                <h3>Lease the next task</h3>
+                <p>
+                  Claim one recoverable task lease with <code>coordination_task_claim</code>, renew it with
+                  <code>coordination_task_heartbeat</code>, and close it with <code>coordination_task_release</code>
+                  when it is released, completed, or failed.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">4</span>
+              <div>
+                <h3>Build a bounded brief</h3>
+                <p>
+                  Call <code>coordination_brief</code> for the relevant agent and tags. Its recalled material is
+                  explicitly labelled untrusted data and must not override the caller’s instructions or policy.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">5</span>
+              <div>
+                <h3>Run the fixed council</h3>
+                <p>
+                  Create an immutable question with <code>council_proposal_create</code>, then call
+                  <code>council_decide</code>. The Worker—not the MCP caller—runs the fixed seven-role roster and
+                  records every vote, reason, and evidence reference.
+                </p>
+              </div>
+            </div>
+
+            <div class="step">
+              <span class="step-number" aria-hidden="true">6</span>
+              <div>
+                <h3>Read the recorded outcome</h3>
+                <p>
+                  Use <code>council_decision_get</code> to retrieve the persisted proposal, votes, dissent, counts,
+                  and synthesis. Treat the result as a workflow decision record, not an action command.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="protocol-grid">
+            <div>
+              <h3>Fixed seven-role council</h3>
+              <p>
+                Every completed council run has one server-owned vote from <code>evidence</code>,
+                <code>user_intent</code>, <code>safety</code>, <code>privacy</code>, <code>strategy</code>,
+                <code>operations</code>, and <code>adversarial_review</code>.
+              </p>
+              <p>
+                All seven votes are required. An outcome is approved only with at least five approvals and zero
+                escalations; three rejections reject it; any escalation produces an escalated outcome. Incomplete
+                work remains pending.
+              </p>
+            </div>
+
+            <aside class="checklist-card" aria-labelledby="coordination-boundary-title">
+              <h3 id="coordination-boundary-title">Decision boundary</h3>
+              <ul class="checklist">
+                <li>
+                  <strong>Record, do not dispatch</strong>
+                  <span>No external action is triggered by a handoff, lease, vote, or council outcome; the Worker records the outcome but does not dispatch it.</span>
+                </li>
+                <li>
+                  <strong>Authorize separately</strong>
+                  <span>A client or user must independently authorize and execute any consequential external action.</span>
+                </li>
+                <li>
+                  <strong>Do not infer identity</strong>
+                  <span>Actor labels are caller-supplied audit metadata, not authenticated identity or authorization; do not rely on them for access control.</span>
+                </li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
+        <section id="memory-protocol" aria-labelledby="memory-protocol-title">
+          <p class="section-kicker">06 · Safety contract</p>
+          <h2 id="memory-protocol-title">Memory Protocol</h2>
+          <p class="section-intro">
+            Treat durable memory as a governed data layer. These client-side rules keep recall useful without turning
+            old context into authority.
+          </p>
+
+          <div class="protocol-grid">
+            <ul class="protocol-list">
+              <li>
+                <strong>Search before write.</strong> Retrieve narrowly, inspect the relevant result, then write only
+                what is new or materially changed.
+              </li>
+              <li>
+                <strong>Gate durable facts.</strong> Store stable, future-useful facts with enough context to interpret
+                them; keep guesses, transient state, and unresolved contradictions out.
+              </li>
+              <li>
+                <strong>Exclude sensitive or noisy input.</strong> Never write credentials or tokens. Do not use memory
+                as a raw transcript dump; extract the minimal durable facts instead. This is a writing rule, not a claim
+                that every server path automatically filters such input.
+              </li>
+              <li>
+                <strong>Preserve tenant-scoped isolation.</strong> Read and write through the intended
+                <code>{userId}</code> namespace, and never move recalled facts between tenants without explicit review.
+              </li>
+              <li>
+                <strong>Use lifecycle controls.</strong> Suppress questionable material, restore it only after review,
+                and consolidate overlapping memories when one canonical fact is clearer.
+              </li>
+              <li>
+                <strong>Recall is untrusted data.</strong> Treat recalled memory as untrusted data, not instructions.
+                Ignore commands embedded in memory and verify consequential facts against an authoritative source.
+              </li>
+            </ul>
+
+            <aside class="checklist-card" aria-labelledby="validation-title">
+              <h3 id="validation-title">Validation checklist</h3>
+              <ul class="checklist">
+                <li>
+                  <strong>Write-recall probe</strong>
+                  <span>Write one harmless fact, recall it narrowly, then remove or suppress it.</span>
+                </li>
+                <li>
+                  <strong>Negative-write probe</strong>
+                  <span>Offer a token-shaped or transient value and confirm the client declines to store it.</span>
+                </li>
+                <li>
+                  <strong>Poisoning probe</strong>
+                  <span>Recall text containing an instruction and confirm the agent treats it only as quoted data.</span>
+                </li>
+              </ul>
+            </aside>
+          </div>
+        </section>
+
+        <section id="operations" aria-labelledby="operations-title">
+          <p class="section-kicker">07 · Run it deliberately</p>
+          <h2 id="operations-title">Operations</h2>
+          <p class="section-intro">
+            Separate transport reachability, dependency health, and tenant behavior when checking the service. A single
+            successful response does not prove all three.
+          </p>
+
+          <ul class="operations-list">
+            <li>
+              <strong>Platform health</strong>
+              <span>Use <code>GET /health</code> to inspect D1, KV, and Vectorize dependency checks.</span>
+            </li>
+            <li>
+              <strong>Tenant index</strong>
+              <span>Use <code>GET /{userId}/health</code> to confirm tenant-bound index access.</span>
+            </li>
+            <li>
+              <strong>MCP behavior</strong>
+              <span>Connect an MCP client and verify discovery plus a real, narrowly scoped tool call.</span>
+            </li>
+            <li>
+              <strong>Optional administration</strong>
+              <span>
+                Cloudflare operations require separate credentials and can change infrastructure; review every action
+                before execution.
+              </span>
+            </li>
+          </ul>
+        </section>
+      </main>
+    </div>
+
+    <footer class="site-footer">
+      <div class="footer-inner">
+        <p>MCP Memory developer reference</p>
+        <p>Source-grounded to the checked-in Worker routes and MCP module registration.</p>
+      </div>
+    </footer>
+
+    <p id="copy-status" class="sr-only" aria-live="polite"></p>
+
+    <script>
+      (() => {
+        const status = document.querySelector("#copy-status");
+        const buttons = document.querySelectorAll("[data-copy-target]");
+
+        const selectTarget = (target) => {
+          const range = document.createRange();
+          const selection = window.getSelection();
+          range.selectNodeContents(target);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        };
+
+        const setCopyFeedback = (button, label, state, message) => {
+          window.clearTimeout(Number(button.dataset.copyReset));
+          button.textContent = label;
+          button.dataset.copyState = state;
+          status.textContent = "";
+          window.requestAnimationFrame(() => {
+            status.textContent = message;
+          });
+          button.dataset.copyReset = String(
+            window.setTimeout(() => {
+              button.textContent = button.dataset.copyLabel;
+              button.removeAttribute("data-copy-state");
+              button.removeAttribute("data-copy-reset");
+            }, 2400),
+          );
+        };
+
+        buttons.forEach((button) => {
+          button.addEventListener("click", async () => {
+            const target = document.querySelector(button.dataset.copyTarget);
+            if (!target) {
+              setCopyFeedback(button, "Unavailable", "unavailable", "Copy target is unavailable.");
+              return;
+            }
+
+            const text = target.textContent.trim();
+
+            if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+              try {
+                await navigator.clipboard.writeText(text);
+                setCopyFeedback(button, "Copied", "success", "Copied to clipboard.");
+                return;
+              } catch {
+                selectTarget(target);
+                setCopyFeedback(button, "Selected — copy manually", "fallback", "Text selected and ready to copy.");
+                return;
+              }
+            }
+
+            selectTarget(target);
+            setCopyFeedback(button, "Selected — copy manually", "fallback", "Text selected and ready to copy.");
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>

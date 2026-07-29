@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("publishes a tenant-scoped, dependency-free MCP reference", async () => {
-  const page = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const page = await readFile(new URL("../static/docs.html", import.meta.url), "utf8");
 
   assert.match(page, /https:\/\/jamie-mcp-memory\.jamusaaron\.workers\.dev/);
   assert.match(page, /\{userId\}\/sse/);
@@ -13,7 +13,7 @@ test("publishes a tenant-scoped, dependency-free MCP reference", async () => {
 });
 
 test("documents the trusted multi-agent workflow and decision boundary", async () => {
-  const page = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const page = await readFile(new URL("../static/docs.html", import.meta.url), "utf8");
 
   assert.match(page, /id="multi-agent-workflows"/);
   for (const role of [
@@ -37,7 +37,7 @@ test("documents the trusted multi-agent workflow and decision boundary", async (
 
 test("uses the selected dark reference system and visible copy feedback", async () => {
   const [page, claude] = await Promise.all([
-    readFile(new URL("../static/index.html", import.meta.url), "utf8"),
+    readFile(new URL("../static/docs.html", import.meta.url), "utf8"),
     readFile(new URL("../CLAUDE.md", import.meta.url), "utf8"),
   ]);
 
@@ -52,14 +52,30 @@ test("uses the selected dark reference system and visible copy feedback", async 
   assert.match(page, /window\.setTimeout/);
   assert.doesNotMatch(page, /fetch\(/i);
 
-  assert.match(claude, /static\/index\.html` — Static developer reference/);
+  assert.match(claude, /static\/index\.html` — Access-protected start menu/);
+  assert.match(claude, /static\/console\.html` — Access-protected memory workspace/);
+  assert.match(claude, /static\/docs\.html` — Static developer reference/);
   assert.doesNotMatch(claude, /Web UI for managing memories/);
 });
 
 test("keeps the mobile document column shrinkable around long code samples", async () => {
-  const page = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+  const page = await readFile(new URL("../static/docs.html", import.meta.url), "utf8");
   const mobilePageShell = page.match(/\.page-shell\s*\{(?<rules>[^}]*)\}/)?.groups?.rules;
 
   assert.ok(mobilePageShell, "the base .page-shell rule must be present");
   assert.match(mobilePageShell, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+});
+
+test("publishes an authenticated console start menu without tenant data", async () => {
+  const menu = await readFile(new URL("../static/index.html", import.meta.url), "utf8");
+
+  assert.match(menu, /Manage memories/);
+  assert.match(menu, /href="\/console"/);
+  assert.match(menu, /Connect an AI/);
+  assert.match(menu, /href="\/docs#connection"/);
+  assert.match(menu, /Developer reference/);
+  assert.match(menu, /href="\/docs"/);
+  assert.match(menu, /Service health/);
+  assert.match(menu, /href="\/docs#operations"/);
+  assert.doesNotMatch(menu, /\{userId\}|localStorage|sessionStorage|fetch\(/i);
 });

@@ -14,7 +14,9 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 
 ## Project Structure
 
-- `src/index.ts` — Hono app with REST endpoints and MCP mount
+- `src/index.ts` — Worker entry point, Durable Object export, MCP mount, and scheduled maintenance
+- `src/app.ts` — Hono routes with the fail-closed Cloudflare Access guard before static, REST, health, and MCP handling
+- `src/access.ts` — Cloudflare Access JWT validation middleware
 - `src/mcp.ts` — MCP server aggregating all tool groups
 - `src/schema.ts` — D1 database migrations (10 tables)
 - `src/types.ts` — Type definitions for all data models
@@ -43,7 +45,9 @@ Persistent, structured long-term memory system for LLM assistants, built as a Cl
 - `src/utils/cloudflare-api.ts` — validated optional Cloudflare account API access
 - `src/utils/tool-result.ts` — consistent MCP text and error results
 - `src/utils/ai.ts` — Workers AI helpers (triage, extraction, summarization)
-- `static/index.html` — Static developer reference for connecting to the tenant-scoped MCP Memory service
+- `static/index.html` — Access-protected start menu for the memory console, client connection, reference, and operations guidance
+- `static/console.html` — Access-protected memory workspace for a currently selected tenant
+- `static/docs.html` — Static developer reference for connecting to the tenant-scoped MCP Memory service
 - `wrangler.jsonc` — Cloudflare Workers configuration
 
 ## Commands

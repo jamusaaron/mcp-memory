@@ -61,7 +61,7 @@
 		"enabled": true
 	},
 	"secrets": {
-		"required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]
+		"required": ["APP_ACCESS_KEY", "COOKIE_ENCRYPTION_KEY"]
 	},
 	"ai": {
 		"binding": "AI"

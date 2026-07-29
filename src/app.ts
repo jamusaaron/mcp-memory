@@ -1,6 +1,13 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { accessMiddleware } from "./access";
+import {
+	appAccessMiddleware,
+	clearSessionCookie,
+	createSessionCookie,
+	createSessionToken,
+	SESSION_MAX_AGE_SECONDS,
+	verifyAccessKey,
+} from "./app-access";
 import { initializeDatabase } from "./schema";
 import {
 	deleteMemory,
@@ -25,13 +32,25 @@ function assetRequest(request: Request, pathname: string): Request {
 	return new Request(url, request);
 }
 
+async function noStoreAsset(request: Request, pathname: string, assets: Fetcher): Promise<Response> {
+	const asset = await assets.fetch(assetRequest(request, pathname));
+	const headers = new Headers(asset.headers);
+	headers.set("Cache-Control", "no-store");
+	return new Response(asset.body, { status: asset.status, headers });
+}
+
+function safeNext(value: unknown): string {
+	if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return "/";
+	return value;
+}
+
 export function createApp(mcpDispatcher: McpDispatcher) {
 	const app = new Hono<{
 		Bindings: Env;
 	}>();
 	let dbInitialized = false;
 
-	app.use("*", accessMiddleware());
+	app.use("*", appAccessMiddleware());
 
 	app.use(
 		"*",
@@ -53,7 +72,7 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 
 	app.use("*", async (c, next) => {
 		const path = new URL(c.req.url).pathname;
-		if (path !== "/" && path !== "/health") {
+		if (path !== "/" && path !== "/health" && !path.startsWith("/auth/")) {
 			try {
 				const tenantKey = path.split("/")[1] || "anonymous";
 				const outcome = await c.env.RATE_LIMITER.limit({ key: tenantKey });
@@ -82,6 +101,34 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 			}
 		}
 		await next();
+	});
+
+	app.get("/auth/login", (c) => noStoreAsset(c.req.raw, "/login.html", c.env.ASSETS));
+
+	app.post("/auth/session", async (c) => {
+		let body: { accessKey?: unknown; next?: unknown };
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.text("Invalid login request", 400, { "Cache-Control": "no-store" });
+		}
+
+		const accessKey = typeof body.accessKey === "string" ? body.accessKey : undefined;
+		if (!(await verifyAccessKey(accessKey, c.env.APP_ACCESS_KEY))) {
+			return c.text("Invalid access key", 401, { "Cache-Control": "no-store" });
+		}
+
+		const expiresAt = Math.floor(Date.now() / 1000) + SESSION_MAX_AGE_SECONDS;
+		const token = await createSessionToken(c.env.COOKIE_ENCRYPTION_KEY, expiresAt);
+		c.header("Set-Cookie", createSessionCookie(token));
+		c.header("Cache-Control", "no-store");
+		return c.json({ success: true, next: safeNext(body.next) });
+	});
+
+	app.get("/auth/logout", (c) => {
+		c.header("Set-Cookie", clearSessionCookie());
+		c.header("Cache-Control", "no-store");
+		return c.redirect("/auth/login");
 	});
 
 	app.get("/", (c) => c.env.ASSETS.fetch(assetRequest(c.req.raw, "/index.html")));

@@ -69,7 +69,8 @@
 	"assets": {
 		"directory": "./static/",
 		"binding": "ASSETS",
-		"run_worker_first": true
+		"run_worker_first": true,
+		"html_handling": "none"
 	},
 	"vectorize": [
 		{

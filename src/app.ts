@@ -30,7 +30,12 @@ export type McpDispatcher = (
 function assetRequest(request: Request, pathname: string): Request {
 	const url = new URL(request.url);
 	url.pathname = pathname;
-	return new Request(url, request);
+	const headers = new Headers(request.headers);
+	// Assets treats browser navigation requests for *.html as canonicalizable pages.
+	// These routes already have canonical public paths, so fetch the file as an asset
+	// and retain the response's own Content-Type rather than accepting a redirect.
+	headers.set("Accept", "application/octet-stream");
+	return new Request(url, { method: request.method, headers });
 }
 
 function safeNext(value: unknown): string {

@@ -14,6 +14,47 @@ test("routes MCP transport requests through the Worker before static assets", as
 		true,
 		"assets.run_worker_first must be true or /:userId/sse can return static HTML",
 	);
+	assert.equal(
+		config.assets?.html_handling,
+		"none",
+		"routed HTML assets must not be redirected back to their canonical path",
+	);
+});
+
+test("fetches routed HTML assets without browser-navigation headers", async () => {
+	let assetRequest: Request | undefined;
+	const app = createApp(async () => new Response("unexpected MCP response"));
+	const env = {
+		APP_ACCESS_KEY: "private-access-key",
+		COOKIE_ENCRYPTION_KEY: "cookie-signing-key",
+		ASSETS: {
+			fetch: async (request: Request) => {
+				assetRequest = request;
+				return new Response("start menu", {
+					headers: { "Content-Type": "text/html; charset=UTF-8" },
+				});
+			},
+		},
+	} as Env;
+
+	const response = await app.fetch(
+		new Request("https://example.test/", {
+			headers: {
+				Accept: "text/html",
+				Authorization: "Bearer private-access-key",
+			},
+		}),
+		env,
+		{} as ExecutionContext,
+	);
+
+	assert.equal(response.status, 200);
+	assert.equal(assetRequest?.url, "https://example.test/index.html");
+	assert.equal(
+		assetRequest?.headers.get("accept"),
+		"application/octet-stream",
+		"asset fetch must not trigger the platform's navigation canonicalization redirect",
+	);
 });
 
 test("redirects unauthenticated browser navigation to the Worker login route", async () => {

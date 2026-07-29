@@ -16,7 +16,9 @@ export async function verifyAccessJwt(token: string, options: AccessJwtOptions):
 
 export function accessMiddleware(
 	verify: AccessJwtVerifier = verifyAccessJwt,
-): MiddlewareHandler<{ Bindings: Pick<Env, "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD"> }> {
+): MiddlewareHandler<{
+	Bindings: { ACCESS_TEAM_DOMAIN?: string; ACCESS_AUD?: string };
+}> {
 	return async (c, next) => {
 		const teamDomain = c.env.ACCESS_TEAM_DOMAIN?.replace(/\/+$/, "") ?? "";
 		const audience = c.env.ACCESS_AUD ?? "";

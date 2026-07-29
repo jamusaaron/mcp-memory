@@ -105,7 +105,7 @@ test("denies unauthenticated REST and MCP requests before their handlers", async
 		},
 	} as Env;
 
-	for (const pathname of ["/tenant/memories", "/tenant/sse"]) {
+	for (const pathname of ["/tenants", "/tenant/memories", "/tenant/sse"]) {
 		const response = await app.fetch(
 			new Request(`https://example.test${pathname}`, { headers: { Accept: "application/json" } }),
 			env,

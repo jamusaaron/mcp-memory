@@ -120,6 +120,37 @@ function rowToMemory(row: Record<string, unknown>): Memory {
 	} as unknown as Memory;
 }
 
+export type TenantSummary = {
+	id: string;
+	memoryCount: number;
+	lastUpdated: string | null;
+};
+
+/**
+ * Lists the small, non-content tenant summaries used by the private console
+ * picker. Memory records themselves remain tenant-scoped and are not returned.
+ */
+export async function listTenantSummaries(
+	env: Env,
+	limit = 100,
+): Promise<TenantSummary[]> {
+	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+	const result = await env.DB
+		.prepare(
+			"SELECT userId AS id, COUNT(*) AS memoryCount, MAX(updated_at) AS lastUpdated " +
+				"FROM memories GROUP BY userId " +
+				"ORDER BY (lastUpdated IS NULL) ASC, lastUpdated DESC, id ASC LIMIT ?",
+		)
+		.bind(boundedLimit)
+		.all<TenantSummary>();
+
+	return result.results.map((row) => ({
+		id: row.id,
+		memoryCount: Number(row.memoryCount),
+		lastUpdated: row.lastUpdated ?? null,
+	}));
+}
+
 // ── Memory CRUD ──
 
 export async function insertMemory(

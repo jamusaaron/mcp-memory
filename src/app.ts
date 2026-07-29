@@ -15,6 +15,7 @@ import {
 	getMemoryById,
 	getMemoryIndex,
 	insertMemory,
+	listTenantSummaries,
 	queryMemories,
 	updateMemory,
 } from "./utils/db";
@@ -156,6 +157,15 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 		}
 		const ok = Object.values(checks).every((value) => value === "ok");
 		return c.json({ success: ok, checks, version: "enhanced" }, ok ? 200 : 503);
+	});
+
+	app.get("/tenants", async (c) => {
+		try {
+			return c.json({ success: true, tenants: await listTenantSummaries(c.env) });
+		} catch (error) {
+			console.error("Error retrieving tenant summaries:", error);
+			return c.json({ success: false, error: "Failed to retrieve tenants" }, 500);
+		}
 	});
 
 	app.get("/:userId/health", async (c) => {

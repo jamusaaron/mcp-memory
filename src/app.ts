@@ -10,6 +10,7 @@ import {
 } from "./app-access";
 import { loginPage } from "./login-page";
 import { initializeDatabase } from "./schema";
+import type { McpWorkspaceSnapshot } from "./utils/mcp-workspace";
 import {
 	deleteMemory,
 	getMemoryById,
@@ -28,6 +29,17 @@ export type McpDispatcher = (
 	ctx: ExecutionContext,
 ) => Promise<Response | undefined>;
 
+type WorkspaceLoader = (userId: string, env: Env) => Promise<McpWorkspaceSnapshot>;
+
+type AppDependencies = {
+	loadWorkspaceFromMcp?: WorkspaceLoader;
+};
+
+const defaultWorkspaceLoader: WorkspaceLoader = async (userId, env) => {
+	const { loadWorkspaceFromMcp } = await import("./utils/mcp-workspace-client");
+	return loadWorkspaceFromMcp(userId, env);
+};
+
 function assetRequest(request: Request, pathname: string): Request {
 	const url = new URL(request.url);
 	url.pathname = pathname;
@@ -44,11 +56,12 @@ function safeNext(value: unknown): string {
 	return value;
 }
 
-export function createApp(mcpDispatcher: McpDispatcher) {
+export function createApp(mcpDispatcher: McpDispatcher, dependencies: AppDependencies = {}) {
 	const app = new Hono<{
 		Bindings: Env;
 	}>();
 	let dbInitialized = false;
+	const loadWorkspaceFromMcp = dependencies.loadWorkspaceFromMcp ?? defaultWorkspaceLoader;
 
 	app.use("*", appAccessMiddleware());
 
@@ -175,6 +188,17 @@ export function createApp(mcpDispatcher: McpDispatcher) {
 			return c.json({ success: true, userId, index });
 		} catch (error) {
 			return c.json({ success: false, error: String(error) }, 500);
+		}
+	});
+
+	app.get("/:userId/workspace", async (c) => {
+		const userId = c.req.param("userId");
+		try {
+			const workspace = await loadWorkspaceFromMcp(userId, c.env);
+			return c.json({ success: true, ...workspace });
+		} catch (error) {
+			console.error("Error retrieving MCP workspace:", error);
+			return c.json({ success: false, error: "Failed to load MCP workspace" }, 500);
 		}
 	});
 

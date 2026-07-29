@@ -21,7 +21,8 @@ import {
 	updateMemory,
 } from "../utils/db";
 import { putLivingSummary } from "../utils/kv";
-import { toolError, toolText } from "../utils/tool-result";
+import { consoleMemoryListSchema, memoryIndexSchema } from "../utils/mcp-workspace";
+import { toolError, toolStructured, toolText } from "../utils/tool-result";
 import {
 	deleteVectorById,
 	rerankMatches,
@@ -627,20 +628,30 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 		},
 	);
 
-	server.tool(
+	server.registerTool(
 		"list_memories",
-		"List memories with optional filtering. Use this for browsing/paginating through memories rather than searching. For finding specific memories, use query_memories (semantic) or search_by_tag instead.",
 		{
-			category: z.enum(CATEGORIES).optional().describe("Filter by category"),
-			layer: z.enum(LAYERS).optional().describe("Filter by layer"),
-			limit: z.number().optional().default(25).describe("Results per page"),
-			offset: z.number().optional().default(0).describe("Pagination offset"),
+			description:
+				"List memories with optional filtering. Use this for browsing/paginating through memories rather than searching. For finding specific memories, use query_memories (semantic) or search_by_tag instead.",
+			inputSchema: z.object({
+				category: z.enum(CATEGORIES).optional().describe("Filter by category"),
+				layer: z.enum(LAYERS).optional().describe("Filter by layer"),
+				limit: z.number().optional().default(25).describe("Results per page"),
+				offset: z.number().optional().default(0).describe("Pagination offset"),
+			}),
+			outputSchema: consoleMemoryListSchema,
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
 		},
 		async (params) => {
 			try {
 				const memories = await queryMemories(userId, env, { ...params, suppressed: false });
 				if (memories.length === 0) {
-					return { content: [{ type: "text", text: "No memories found." }] };
+					return toolStructured("No memories found.", { memories: [] });
 				}
 				const formatted = memories
 					.map(
@@ -650,13 +661,21 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 							}`,
 					)
 					.join("\n");
-				return {
-					content: [{ type: "text", text: `${memories.length} memories:\n${formatted}` }],
-				};
+				return toolStructured(`${memories.length} memories:\n${formatted}`, {
+					memories: memories.map((memory) => ({
+						id: memory.id,
+						content: memory.text,
+						category: memory.category,
+						layer: memory.layer,
+						confidence: memory.confidence,
+						salience: memory.salience,
+						pinned: memory.pinned,
+						tags: memory.tags,
+						created_at: memory.created_at,
+					})),
+				});
 			} catch (error) {
-				return {
-					content: [{ type: "text", text: "Failed to list memories: " + String(error) }],
-				};
+				return toolError(error);
 			}
 		},
 	);
@@ -700,10 +719,20 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 		},
 	);
 
-	server.tool(
+	server.registerTool(
 		"get_memory_index",
-		"Get a statistical overview of the memory store: total count, counts by category and layer, embedding status. Use this to understand the state of the memory system at a glance.",
-		{},
+		{
+			description:
+				"Get a statistical overview of the memory store: total count, counts by category and layer, embedding status. Use this to understand the state of the memory system at a glance.",
+			inputSchema: z.object({}),
+			outputSchema: memoryIndexSchema,
+			annotations: {
+				readOnlyHint: true,
+				destructiveHint: false,
+				idempotentHint: true,
+				openWorldHint: false,
+			},
+		},
 		async () => {
 			try {
 				const index = await getMemoryIndex(userId, env);
@@ -719,13 +748,9 @@ export function registerMemoryTools(server: McpServer, env: Env, userId: string)
 					Object.entries(index.by_layer)
 						.map(([k, v]) => `  ${k}: ${v}`)
 						.join("\n");
-				return { content: [{ type: "text", text }] };
+				return toolStructured(text, { ...index });
 			} catch (error) {
-				return {
-					content: [
-						{ type: "text", text: "Failed to get memory index: " + String(error) },
-					],
-				};
+				return toolError(error);
 			}
 		},
 	);

@@ -234,23 +234,20 @@ if (typeof document !== "undefined") {
 		clearTenantState();
 		state.tenantId = tenantId;
 		const loadId = state.loadId;
-		setStatus("Loading tenant workspace…");
+		setStatus("Loading MCP memory workspace…");
 
 		try {
-			const [health, records] = await Promise.all([
-				request(memoryRoute(tenantId, "health")),
-				request(memoryRoute(tenantId, "memories")),
-			]);
+			const workspace = await request(memoryRoute(tenantId, "workspace"));
 			if (loadId !== state.loadId || state.tenantId !== tenantId) return;
-			state.index = health.index ?? null;
-			state.memories = Array.isArray(records.memories) ? records.memories : [];
+			state.index = workspace.index ?? null;
+			state.memories = Array.isArray(workspace.memories) ? workspace.memories : [];
 			elements.activeTenant.textContent = tenantId;
 			elements.filters.hidden = false;
 			elements.newMemory.disabled = false;
 			elements.indexSummary.textContent = state.index ? "Tenant index loaded" : "";
 			populateFilters();
 			renderMemories();
-			setStatus("Workspace loaded.", "success");
+			setStatus("MCP workspace loaded.", "success");
 		} catch {
 			if (loadId !== state.loadId || state.tenantId !== tenantId) return;
 			clearTenantState();

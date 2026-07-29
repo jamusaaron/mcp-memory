@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Access-protected management workspace for MCP Memory tenants." />
+    <title>MCP Memory · Management workspace</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --paper: #070b17;
+        --surface: #0e1628;
+        --surface-raised: #14213a;
+        --ink: #f4f7fb;
+        --muted: #a9b7cf;
+        --border: #2c3b54;
+        --cyan: #57e2eb;
+        --indigo: #a5a0ff;
+        --danger: #fb7185;
+        --focus: #fbbf24;
+        --shadow: 0 20px 52px rgb(0 0 0 / 35%);
+      }
+
+      *, *::before, *::after { box-sizing: border-box; }
+      html { background: var(--paper); }
+      body {
+        min-width: 20rem;
+        min-height: 100vh;
+        margin: 0;
+        background: radial-gradient(circle at 93% 5%, rgb(87 226 235 / 12%), transparent 23rem), var(--paper);
+        color: var(--ink);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+      button, input, textarea, select { font: inherit; }
+      button { cursor: pointer; }
+      a { color: var(--indigo); text-underline-offset: 0.2em; }
+      :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+      .skip-link {
+        position: fixed; z-index: 10; top: .75rem; left: .75rem; transform: translateY(-180%);
+        border-radius: .5rem; background: var(--ink); color: var(--paper); padding: .6rem .85rem; font-weight: 750;
+        transition: transform 160ms ease;
+      }
+      .skip-link:focus { transform: translateY(0); }
+      .shell { width: min(100% - 2rem, 82rem); margin-inline: auto; }
+      .topbar {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        border-bottom: 1px solid var(--border); padding-block: 1.2rem;
+      }
+      .brand { display: inline-flex; align-items: center; gap: .55rem; color: var(--ink); font-weight: 800; letter-spacing: .04em; text-decoration: none; }
+      .brand::before, .eyebrow::before {
+        width: .65rem; height: .65rem; border-radius: 999px; background: var(--cyan); box-shadow: 0 0 0 .27rem rgb(87 226 235 / 15%); content: "";
+      }
+      .topbar nav { display: flex; flex-wrap: wrap; gap: .8rem; font-size: .86rem; }
+      main { padding-block: clamp(2rem, 6vw, 4.5rem) 3rem; }
+      .eyebrow { display: inline-flex; align-items: center; gap: .55rem; margin: 0 0 .75rem; color: var(--indigo); font-size: .75rem; font-weight: 850; letter-spacing: .13em; text-transform: uppercase; }
+      .eyebrow::before { width: .5rem; height: .5rem; }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { margin-bottom: .7rem; font-size: clamp(2.3rem, 6vw, 4.4rem); line-height: .98; letter-spacing: -.055em; }
+      h2 { margin-bottom: .45rem; font-size: clamp(1.35rem, 3vw, 1.8rem); letter-spacing: -.035em; }
+      h3 { margin-bottom: .25rem; font-size: 1rem; }
+      .lede, .section-intro, .hint { color: var(--muted); }
+      .lede { max-width: 47rem; margin-bottom: 2rem; font-size: 1.08rem; }
+      .workspace-grid { display: grid; grid-template-columns: minmax(16rem, .8fr) minmax(0, 2fr); gap: 1.25rem; align-items: start; }
+      .panel { border: 1px solid var(--border); border-radius: 1rem; background: rgb(14 22 40 / 92%); box-shadow: var(--shadow); padding: clamp(1rem, 3vw, 1.5rem); }
+      .panel + .panel { margin-top: 1.25rem; }
+      .workspace-panel { min-width: 0; }
+      label { display: block; margin-bottom: .4rem; color: var(--ink); font-size: .88rem; font-weight: 750; }
+      input, textarea, select {
+        width: 100%; border: 1px solid var(--border); border-radius: .55rem; background: #091121; color: var(--ink); padding: .68rem .75rem;
+      }
+      textarea { min-height: 8rem; resize: vertical; }
+      input:disabled, select:disabled { opacity: .58; cursor: not-allowed; }
+      .field + .field { margin-top: 1rem; }
+      .button-row { display: flex; flex-wrap: wrap; gap: .65rem; margin-top: 1rem; }
+      .button, .secondary-button, .danger-button, .text-button {
+        border: 1px solid var(--border); border-radius: .55rem; padding: .65rem .85rem; font-weight: 800;
+      }
+      .button { border-color: #267d87; background: var(--cyan); color: #06202a; }
+      .button:hover { background: #9bf2f4; }
+      .secondary-button { background: var(--surface-raised); color: var(--ink); }
+      .secondary-button:hover { border-color: var(--indigo); }
+      .danger-button { border-color: #a33951; background: #401827; color: #ffdce3; }
+      .danger-button:disabled { cursor: not-allowed; opacity: .45; }
+      .text-button { border-color: transparent; background: transparent; color: var(--indigo); padding-inline: .2rem; text-decoration: underline; text-underline-offset: .2em; }
+      .status { min-height: 1.5rem; margin: 1rem 0 0; color: var(--muted); font-size: .9rem; }
+      .status[data-state="error"] { color: #ffb4c1; }
+      .status[data-state="success"] { color: #9bf2f4; }
+      .workspace-header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 1rem; }
+      .tenant-label { margin: 0; color: var(--cyan); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+      .filters { display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, minmax(8rem, .45fr)); gap: .75rem; margin-top: 1.25rem; }
+      .filter-field label { color: var(--muted); font-size: .75rem; }
+      .list-summary { display: flex; justify-content: space-between; gap: 1rem; margin: 1.15rem 0 .75rem; color: var(--muted); font-size: .85rem; }
+      .memory-list { display: grid; gap: .7rem; }
+      .empty-state { margin: 0; border: 1px dashed var(--border); border-radius: .75rem; color: var(--muted); padding: 1rem; text-align: center; }
+      .memory-card { border: 1px solid var(--border); border-radius: .75rem; background: #091121; padding: 1rem; }
+      .memory-card header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .7rem; }
+      .memory-id { color: var(--indigo); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .76rem; overflow-wrap: anywhere; }
+      .memory-content { margin: .7rem 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+      .memory-meta { display: flex; flex-wrap: wrap; gap: .4rem; color: var(--muted); font-size: .78rem; }
+      .tag { border: 1px solid var(--border); border-radius: 999px; padding: .12rem .42rem; }
+      .memory-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .85rem; }
+      dialog { width: min(100% - 2rem, 31rem); border: 1px solid var(--border); border-radius: 1rem; background: var(--surface); color: var(--ink); box-shadow: 0 24px 70px rgb(0 0 0 / 60%); padding: 1.35rem; }
+      dialog::backdrop { background: rgb(0 0 0 / 65%); }
+      .dialog-description { color: var(--muted); overflow-wrap: anywhere; }
+      .notice { margin: 0; border-left: 3px solid var(--cyan); background: #0b2632; color: var(--muted); padding: .8rem .9rem; font-size: .86rem; }
+      @media (max-width: 50rem) { .workspace-grid { grid-template-columns: minmax(0, 1fr); } .filters { grid-template-columns: minmax(0, 1fr); } }
+      @media (max-width: 34rem) { .topbar { align-items: start; flex-direction: column; } .shell { width: min(100% - 1.25rem, 82rem); } }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to memory workspace</a>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/">MCP Memory</a>
+        <nav aria-label="Console links"><a href="/">Start menu</a><a href="/docs">Developer reference</a></nav>
+      </header>
+
+      <main>
+        <p class="eyebrow">Access-protected management</p>
+        <h1>Memory workspace</h1>
+        <p class="lede">Load one tenant for this page only. Filtering is local to the loaded records; writes use the existing tenant-scoped API.</p>
+
+        <div class="workspace-grid" id="workspace">
+          <aside>
+            <section class="panel" aria-labelledby="tenant-title">
+              <h2 id="tenant-title">Select tenant</h2>
+              <p class="section-intro">Tenant selection is kept only while this page remains open.</p>
+              <form id="tenant-form">
+                <div class="field">
+                  <label for="tenant-id">Tenant ID</label>
+                  <input id="tenant-id" name="tenantId" autocomplete="off" required />
+                </div>
+                <div class="button-row"><button class="button" type="submit">Load workspace</button></div>
+              </form>
+              <p id="console-status" class="status" aria-live="polite"></p>
+            </section>
+
+            <section class="panel" id="editor-panel" hidden aria-labelledby="editor-title">
+              <h2 id="editor-title">New memory</h2>
+              <p class="notice" id="editor-notice" hidden></p>
+              <form id="memory-form">
+                <div class="field"><label for="memory-content">Memory</label><textarea id="memory-content" name="content" required></textarea></div>
+                <div class="field"><label for="memory-category">Category</label><input id="memory-category" name="category" value="knowledge" /></div>
+                <div class="field"><label for="memory-layer">Layer</label><input id="memory-layer" name="layer" value="current" /></div>
+                <div class="field"><label for="memory-tags">Tags</label><input id="memory-tags" name="tags" placeholder="comma-separated" /></div>
+                <div class="button-row"><button class="button" type="submit">Save memory</button><button class="secondary-button" type="button" id="cancel-edit">Cancel</button></div>
+              </form>
+            </section>
+          </aside>
+
+          <section class="panel workspace-panel" aria-labelledby="records-title">
+            <div class="workspace-header">
+              <div><h2 id="records-title">Loaded records</h2><p class="tenant-label" id="active-tenant">No tenant selected</p></div>
+              <button class="button" type="button" id="new-memory" disabled>New memory</button>
+            </div>
+            <div class="filters" id="filters" hidden>
+              <div class="filter-field"><label for="filter-query">Search loaded records</label><input id="filter-query" type="search" autocomplete="off" /></div>
+              <div class="filter-field"><label for="filter-category">Category</label><select id="filter-category"><option value="">All categories</option></select></div>
+              <div class="filter-field"><label for="filter-layer">Layer</label><select id="filter-layer"><option value="">All layers</option></select></div>
+            </div>
+            <div class="list-summary"><span id="memory-count">Load a tenant to begin.</span><span id="index-summary"></span></div>
+            <div class="memory-list" id="memory-list"><p class="empty-state">No records are loaded.</p></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <dialog id="delete-dialog" aria-labelledby="delete-title">
+      <h2 id="delete-title">Delete memory?</h2>
+      <p id="delete-description" class="dialog-description"></p>
+      <label for="delete-confirmation">Type the memory ID to confirm</label>
+      <input id="delete-confirmation" autocomplete="off" />
+      <div class="button-row"><button class="danger-button" type="button" id="confirm-delete" disabled>Delete permanently</button><button class="secondary-button" type="button" id="cancel-delete">Cancel</button></div>
+    </dialog>
+
+    <script type="module" src="/console.mjs"></script>
+  </body>
+</html>

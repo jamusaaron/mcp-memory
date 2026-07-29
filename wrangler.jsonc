@@ -60,6 +60,9 @@
 	"observability": {
 		"enabled": true
 	},
+	"secrets": {
+		"required": ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]
+	},
 	"ai": {
 		"binding": "AI"
 	},

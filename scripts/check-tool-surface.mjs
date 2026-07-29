@@ -269,8 +269,8 @@ if (hasR2Binding && !/R2\??\s*:\s*R2Bucket/.test(types)) {
 if (!hasR2Binding && !/R2\?\s*:\s*R2Bucket/.test(types)) {
 	errors.push("without wrangler R2 binding, Env.R2 should be optional (R2?: R2Bucket)");
 }
-const indexSource = fs.readFileSync("src/index.ts", "utf8");
-if (!indexSource.includes("RATE_LIMITER.limit"))
+const appSource = fs.readFileSync("src/app.ts", "utf8");
+if (!appSource.includes("RATE_LIMITER.limit"))
 	errors.push("rate limiter binding is not enforced");
 const mcpSource = fs.readFileSync("src/mcp.ts", "utf8");
 if (!mcpSource.includes("registerBlobTools")) {

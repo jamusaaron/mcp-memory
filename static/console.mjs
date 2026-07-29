@@ -309,7 +309,7 @@ if (typeof document !== "undefined") {
 			elements.deleteConfirmation.value,
 		);
 	});
-	
+
 	elements.confirmDelete.addEventListener("click", () => {
 		const memoryId = state.pendingDeleteId;
 		const tenantId = state.tenantId;

@@ -15,28 +15,30 @@ type TenantSummaryDb = typeof db & {
 	listTenantSummaries?: (env: Env, limit?: number) => Promise<TenantSummary[]>;
 };
 
-test("caps tenant discovery and returns summaries without memory content", async () => {
+test("returns every known tenant summary without memory content", async () => {
 	let sql = "";
 	let boundLimit: unknown;
 	const env = {
 		DB: {
 			prepare(statement: string) {
 				sql = statement;
+				const result = {
+					all: async () => ({
+						results: [
+							{
+								id: "tenant-b",
+								memoryCount: 2,
+								lastUpdated: "2026-07-30T00:00:00.000Z",
+							},
+						],
+					}),
+				};
 				return {
 					bind(limit: unknown) {
 						boundLimit = limit;
-						return {
-							all: async () => ({
-								results: [
-									{
-										id: "tenant-b",
-										memoryCount: 2,
-										lastUpdated: "2026-07-30T00:00:00.000Z",
-									},
-								],
-							}),
-						};
+						return result;
 					},
+					...result,
 				};
 			},
 		},
@@ -50,12 +52,40 @@ test("caps tenant discovery and returns summaries without memory content", async
 	);
 	if (typeof listTenantSummaries !== "function") return;
 
-	assert.deepEqual(await listTenantSummaries(env, 250), [
+	assert.deepEqual(await listTenantSummaries(env), [
 		{ id: "tenant-b", memoryCount: 2, lastUpdated: "2026-07-30T00:00:00.000Z" },
 	]);
-	assert.equal(boundLimit, 100);
+	assert.equal(boundLimit, undefined);
+	assert.match(sql, /WITH known_tenants AS/i);
+	assert.match(sql, /UNION\s+SELECT userId FROM derived_artifacts/i);
+	assert.match(sql, /COALESCE\(memory_summary\.memoryCount, 0\)/i);
 	assert.match(sql, /COUNT\(\*\) AS memoryCount/);
-	assert.doesNotMatch(sql, /\btext\b|\bcontent\b/i);
+	assert.doesNotMatch(sql, /\btext\b|\bcontent\b|\bvalue\b/i);
+});
+
+test("lists a known tenant even when it has no memory rows", async (t) => {
+	const harness = createSqliteD1Harness();
+	t.after(() => harness.close());
+	await initializeSqliteD1(harness.env);
+	await insertMemory({ userId: "tenant-with-memory", text: "A private memory" }, harness.env);
+	await harness.env.DB.prepare(
+		"INSERT INTO people (id,userId,name) VALUES (?,?,?)",
+	)
+		.bind("person-without-memory", "tenant-with-profile", "Private person")
+		.run();
+
+	const listTenantSummaries = (db as TenantSummaryDb).listTenantSummaries;
+	assert.equal(typeof listTenantSummaries, "function");
+	if (typeof listTenantSummaries !== "function") return;
+
+	assert.deepEqual(await listTenantSummaries(harness.env), [
+		{
+			id: "tenant-with-memory",
+			memoryCount: 1,
+			lastUpdated: (await listTenantSummaries(harness.env))[0]?.lastUpdated,
+		},
+		{ id: "tenant-with-profile", memoryCount: 0, lastUpdated: null },
+	]);
 });
 
 test("returns tenant summaries only to an authenticated console request", async (t) => {

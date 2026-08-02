@@ -26,6 +26,10 @@ export function tenantOptionLabel(tenant) {
 	return `${tenant.id} — ${tenant.memoryCount} ${tenant.memoryCount === 1 ? "memory" : "memories"}`;
 }
 
+export function tenantPickerSummary(count) {
+	return `${count} known tenant${count === 1 ? "" : "s"}`;
+}
+
 export function selectedTenantId(selectedId, manualId) {
 	return manualId.trim() || selectedId.trim();
 }
@@ -44,6 +48,8 @@ if (typeof document !== "undefined") {
 		tenantForm: document.querySelector("#tenant-form"),
 		tenantSelect: document.querySelector("#tenant-select"),
 		tenantId: document.querySelector("#tenant-id"),
+		tenantSummary: document.querySelector("#tenant-summary"),
+		tenantRefresh: document.querySelector("#tenant-refresh"),
 		status: document.querySelector("#console-status"),
 		editorPanel: document.querySelector("#editor-panel"),
 		editorTitle: document.querySelector("#editor-title"),
@@ -74,6 +80,11 @@ if (typeof document !== "undefined") {
 		elements.status.textContent = message;
 		if (kind) elements.status.dataset.state = kind;
 		else delete elements.status.dataset.state;
+	}
+
+	function setTenantPickerBusy(busy) {
+		elements.tenantSelect.setAttribute("aria-busy", String(busy));
+		elements.tenantRefresh.disabled = busy;
 	}
 
 	function setSelectOptions(select, values, label) {
@@ -134,6 +145,8 @@ if (typeof document !== "undefined") {
 	}
 
 	async function loadTenantOptions() {
+		const selectedTenant = state.tenantId || elements.tenantSelect.value;
+		setTenantPickerBusy(true);
 		try {
 			const payload = await request("/tenants");
 			const tenants = Array.isArray(payload.tenants) ? payload.tenants : [];
@@ -141,18 +154,22 @@ if (typeof document !== "undefined") {
 			const placeholder = document.createElement("option");
 			placeholder.value = "";
 			placeholder.textContent = tenants.length
-				? "Select a tenant…"
-				: "No tenants with memories are available";
+				? "Select a tenant to load it…"
+				: "No known tenants are available";
 			elements.tenantSelect.append(placeholder);
 			for (const tenant of tenants) {
 				const option = document.createElement("option");
 				option.value = tenant.id;
-				option.textContent = tenantOptionLabel(tenant);
-				elements.tenantSelect.append(option);
+			option.textContent = tenantOptionLabel(tenant);
+			elements.tenantSelect.append(option);
+			}
+			if (tenants.some((tenant) => tenant.id === selectedTenant)) {
+				elements.tenantSelect.value = selectedTenant;
 			}
 			elements.tenantSelect.disabled = tenants.length === 0;
+			elements.tenantSummary.textContent = tenantPickerSummary(tenants.length);
 			if (tenants.length === 0) {
-				setStatus("No tenants with memories were found. Enter a tenant ID manually.", "error");
+				setStatus("No known tenants were found. Enter a tenant ID manually.", "error");
 			}
 		} catch {
 			elements.tenantSelect.replaceChildren();
@@ -161,7 +178,10 @@ if (typeof document !== "undefined") {
 			unavailable.textContent = "Tenant choices unavailable";
 			elements.tenantSelect.append(unavailable);
 			elements.tenantSelect.disabled = true;
+			elements.tenantSummary.textContent = "Tenant list unavailable";
 			setStatus("Unable to load tenant choices. Enter a tenant ID manually.", "error");
+		} finally {
+			setTenantPickerBusy(false);
 		}
 	}
 
@@ -234,6 +254,8 @@ if (typeof document !== "undefined") {
 		clearTenantState();
 		state.tenantId = tenantId;
 		const loadId = state.loadId;
+		elements.tenantSelect.value = tenantId;
+		setTenantPickerBusy(true);
 		setStatus("Loading MCP memory workspace…");
 
 		try {
@@ -252,6 +274,10 @@ if (typeof document !== "undefined") {
 			if (loadId !== state.loadId || state.tenantId !== tenantId) return;
 			clearTenantState();
 			setStatus("Unable to load that tenant workspace. Your current records remain unchanged.", "error");
+		} finally {
+			const completedCurrentLoad = state.loadId === loadId && state.tenantId === tenantId;
+			const completedCurrentFailure = state.loadId === loadId + 1 && !state.tenantId;
+			if (completedCurrentLoad || completedCurrentFailure) setTenantPickerBusy(false);
 		}
 	}
 
@@ -312,6 +338,15 @@ if (typeof document !== "undefined") {
 		}
 		void loadWorkspace(tenantId);
 	});
+
+	elements.tenantSelect.addEventListener("change", () => {
+		const tenantId = elements.tenantSelect.value.trim();
+		if (!tenantId) return;
+		elements.tenantId.value = "";
+		void loadWorkspace(tenantId);
+	});
+
+	elements.tenantRefresh.addEventListener("click", () => void loadTenantOptions());
 
 	elements.newMemory.addEventListener("click", () => openEditor());
 	elements.cancelEdit.addEventListener("click", closeEditor);

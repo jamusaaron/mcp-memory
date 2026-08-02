@@ -126,22 +126,56 @@ export type TenantSummary = {
 	lastUpdated: string | null;
 };
 
+const TENANT_SOURCE_TABLES = [
+	"memories",
+	"people",
+	"person_profiles",
+	"pending_updates",
+	"session_logs",
+	"uncertainties",
+	"ai_notes",
+	"transcripts",
+	"behavioral_observations",
+	"personality_feedback",
+	"agent_tasks",
+	"agent_presence",
+	"agent_runs",
+	"derived_artifacts",
+	"derived_artifact_sources",
+	"derived_artifact_events",
+	"derived_artifact_rebuild_state",
+	"derived_artifact_evidence_state",
+	"derived_artifact_legacy_state",
+	"artifact_cache_purge_queue",
+	"profile_facts",
+	"coordination_handoffs",
+	"coordination_handoff_reviews",
+	"coordination_task_leases",
+	"coordination_task_events",
+	"council_proposals",
+	"council_votes",
+	"council_events",
+] as const;
+
+const KNOWN_TENANT_QUERY =
+	"WITH known_tenants AS (" +
+	TENANT_SOURCE_TABLES.map((table) => `SELECT userId FROM ${table}`).join(" UNION ") +
+	"), memory_summary AS (" +
+	"SELECT userId, COUNT(*) AS memoryCount, MAX(updated_at) AS lastUpdated FROM memories GROUP BY userId" +
+	") SELECT known_tenants.userId AS id, COALESCE(memory_summary.memoryCount, 0) AS memoryCount, " +
+	"memory_summary.lastUpdated AS lastUpdated FROM known_tenants " +
+	"LEFT JOIN memory_summary ON memory_summary.userId = known_tenants.userId " +
+	"ORDER BY (lastUpdated IS NULL) ASC, lastUpdated DESC, id ASC";
+
 /**
- * Lists the small, non-content tenant summaries used by the private console
- * picker. Memory records themselves remain tenant-scoped and are not returned.
+ * Lists private tenant summaries for every tenant known to the D1 store.
+ * Tenant content remains tenant-scoped and is never returned.
  */
 export async function listTenantSummaries(
 	env: Env,
-	limit = 100,
 ): Promise<TenantSummary[]> {
-	const boundedLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
 	const result = await env.DB
-		.prepare(
-			"SELECT userId AS id, COUNT(*) AS memoryCount, MAX(updated_at) AS lastUpdated " +
-				"FROM memories GROUP BY userId " +
-				"ORDER BY (lastUpdated IS NULL) ASC, lastUpdated DESC, id ASC LIMIT ?",
-		)
-		.bind(boundedLimit)
+		.prepare(KNOWN_TENANT_QUERY)
 		.all<TenantSummary>();
 
 	return result.results.map((row) => ({

@@ -74,6 +74,15 @@ test("labels selectable tenant options with their memory counts", () => {
 	);
 });
 
+test("labels the complete known-tenant count for the selector", () => {
+	const tenantPickerSummary = consoleWorkspace.tenantPickerSummary;
+	assert.equal(typeof tenantPickerSummary, "function", "the console must describe known tenants");
+	if (typeof tenantPickerSummary !== "function") return;
+
+	assert.equal(tenantPickerSummary(1), "1 known tenant");
+	assert.equal(tenantPickerSummary(4), "4 known tenants");
+});
+
 test("uses manual tenant entry in preference to a selected discovery result", () => {
 	const selectedTenantId = consoleWorkspace.selectedTenantId;
 	assert.equal(typeof selectedTenantId, "function", "the console must keep manual tenant entry");

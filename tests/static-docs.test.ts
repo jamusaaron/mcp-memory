@@ -85,7 +85,18 @@ test("publishes an accessible tenant picker with a manual-entry fallback", async
 
 	assert.match(consolePage, /<label for="tenant-select">Available tenants<\/label>/);
 	assert.match(consolePage, /<select id="tenant-select" name="tenantSelect" disabled>/);
+	assert.match(consolePage, /id="tenant-summary"/);
+	assert.match(consolePage, /id="tenant-refresh"/);
 	assert.match(consolePage, /<details class="field">/);
 	assert.match(consolePage, /<summary>Enter tenant ID manually<\/summary>/);
 	assert.match(consolePage, /<input id="tenant-id" name="tenantId" autocomplete="off" \/>/);
+});
+
+test("loads a selected tenant directly from the picker", async () => {
+	const consoleModule = await readFile(new URL("../static/console.mjs", import.meta.url), "utf8");
+
+	assert.match(
+		consoleModule,
+		/elements\.tenantSelect\.addEventListener\("change", \(\) => \{[\s\S]*void loadWorkspace\(tenantId\);[\s\S]*\}\);/,
+	);
 });

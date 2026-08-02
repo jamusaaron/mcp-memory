@@ -65,6 +65,7 @@
       .panel { border: 1px solid var(--border); border-radius: 1rem; background: rgb(14 22 40 / 92%); box-shadow: var(--shadow); padding: clamp(1rem, 3vw, 1.5rem); }
       .panel + .panel { margin-top: 1.25rem; }
       .workspace-panel { min-width: 0; }
+      .tenant-panel { border-color: #356377; background: linear-gradient(145deg, rgb(18 42 62 / 94%), rgb(14 22 40 / 94%) 72%); }
       label { display: block; margin-bottom: .4rem; color: var(--ink); font-size: .88rem; font-weight: 750; }
       input, textarea, select {
         width: 100%; border: 1px solid var(--border); border-radius: .55rem; background: #091121; color: var(--ink); padding: .68rem .75rem;
@@ -88,8 +89,15 @@
       .status { min-height: 1.5rem; margin: 1rem 0 0; color: var(--muted); font-size: .9rem; }
       .status[data-state="error"] { color: #ffb4c1; }
       .status[data-state="success"] { color: #9bf2f4; }
+      .picker-heading, .picker-meta { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+      .picker-heading { margin-bottom: .45rem; }
+      .picker-heading h2 { margin: 0; }
+      .picker-meta { margin-top: .55rem; }
+      .tenant-summary { margin: 0; color: var(--cyan); font-size: .78rem; font-weight: 800; letter-spacing: .03em; text-transform: uppercase; }
+      .picker-help { margin: .65rem 0 0; color: var(--muted); font-size: .83rem; }
+      .tenant-refresh { min-height: 2.4rem; white-space: nowrap; }
       .workspace-header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 1rem; }
-      .tenant-label { margin: 0; color: var(--cyan); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; }
+      .tenant-label { display: inline-flex; align-items: center; min-height: 2rem; margin: .55rem 0 0; border: 1px solid #356377; border-radius: 999px; background: rgb(87 226 235 / 10%); color: var(--cyan); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: .8rem; overflow-wrap: anywhere; padding: .25rem .65rem; }
       .filters { display: grid; grid-template-columns: minmax(0, 1fr) repeat(2, minmax(8rem, .45fr)); gap: .75rem; margin-top: 1.25rem; }
       .filter-field label { color: var(--muted); font-size: .75rem; }
       .list-summary { display: flex; justify-content: space-between; gap: 1rem; margin: 1.15rem 0 .75rem; color: var(--muted); font-size: .85rem; }
@@ -106,7 +114,7 @@
       dialog::backdrop { background: rgb(0 0 0 / 65%); }
       .dialog-description { color: var(--muted); overflow-wrap: anywhere; }
       .notice { margin: 0; border-left: 3px solid var(--cyan); background: #0b2632; color: var(--muted); padding: .8rem .9rem; font-size: .86rem; }
-      @media (max-width: 50rem) { .workspace-grid { grid-template-columns: minmax(0, 1fr); } .filters { grid-template-columns: minmax(0, 1fr); } }
+      @media (max-width: 50rem) { .workspace-grid { grid-template-columns: minmax(0, 1fr); } .filters { grid-template-columns: minmax(0, 1fr); } .tenant-refresh { padding-inline: .7rem; } }
       @media (max-width: 34rem) { .topbar { align-items: start; flex-direction: column; } .shell { width: min(100% - 1.25rem, 82rem); } }
       @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; } }
     </style>
@@ -122,26 +130,28 @@
       <main>
         <p class="eyebrow">Private memory management</p>
         <h1>Memory workspace</h1>
-        <p class="lede">Load one tenant for this page only. Filtering is local to the loaded records; writes use the existing tenant-scoped API.</p>
+        <p class="lede">Choose a known tenant to load its MCP workspace immediately. Filtering stays local to the loaded records; writes use the existing tenant-scoped API.</p>
 
         <div class="workspace-grid" id="workspace">
           <aside>
-            <section class="panel" aria-labelledby="tenant-title">
-              <h2 id="tenant-title">Select tenant</h2>
-              <p class="section-intro">Tenant selection is kept only while this page remains open.</p>
+            <section class="panel tenant-panel" aria-labelledby="tenant-title">
+              <div class="picker-heading"><h2 id="tenant-title">Tenant workspace</h2><button class="secondary-button tenant-refresh" id="tenant-refresh" type="button">Refresh list</button></div>
+              <p class="section-intro">Select a tenant to load it. Selection is kept only while this page remains open.</p>
               <form id="tenant-form">
                 <div class="field">
                   <label for="tenant-select">Available tenants</label>
                   <select id="tenant-select" name="tenantSelect" disabled>
                     <option value="">Loading available tenants…</option>
                   </select>
+                  <div class="picker-meta"><p class="tenant-summary" id="tenant-summary">Loading known tenants…</p></div>
+                  <p class="picker-help">Choosing a tenant loads its MCP memory workspace automatically.</p>
                 </div>
                 <details class="field">
                   <summary>Enter tenant ID manually</summary>
                   <label for="tenant-id">Tenant ID</label>
                   <input id="tenant-id" name="tenantId" autocomplete="off" />
+                  <div class="button-row"><button class="secondary-button" type="submit">Load typed tenant</button></div>
                 </details>
-                <div class="button-row"><button class="button" type="submit">Load workspace</button></div>
               </form>
               <p id="console-status" class="status" aria-live="polite"></p>
             </section>
